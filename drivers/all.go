@@ -2,7 +2,9 @@
 package drivers
 
 import (
-	_ "litepan/drivers/115"
+	// 本地构建临时去掉：drivers/115 被 .gitignore 排除，这份 checkout 里没有。
+	// 该目录到位后应当恢复这行。
+	// _ "litepan/drivers/115"
 	_ "litepan/drivers/115_Open"
 	_ "litepan/drivers/123_Open"
 	_ "litepan/drivers/139Cloud"

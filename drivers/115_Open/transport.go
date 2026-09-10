@@ -45,6 +45,10 @@ const (
 	downloadLinkTTL         = 5 * time.Minute
 	singlePartUploadLimit   = 512 * 1024 * 1024
 	preidHashSize           = 128 * 1024
+	// 请求体发完之后等 OSS/115 返回响应头的上限。合并分片会触发 115 的回调，
+	// 那边要按 sha1 校验整个文件，大文件可能要等上一阵，所以给得比较宽松；
+	// 它只用来兜底彻底僵死的连接，正常传输不受影响。
+	ossResponseHeaderTimeout = 10 * time.Minute
 )
 
 type apiEnvelope struct {
