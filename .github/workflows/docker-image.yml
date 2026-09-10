@@ -1,0 +1,100 @@
+name: 构建镜像
+
+# main 更新时自动构建并推送镜像；PR 只构建不推送，用于在合并前验证
+# Dockerfile 仍然可用。也可以在 Actions 页面手动触发。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: falconchen/litepan
+
+# 同一分支上只保留最新一次运行，旧的直接取消，避免连续推送时排队浪费额度
+concurrency:
+  group: docker-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # 跟随 go.mod 里声明的版本，避免和 Dockerfile 里的 golang 镜像脱节
+          go-version-file: go.mod
+          cache: true
+
+      # 与 Dockerfile 保持一致：BUILD_TAGS 默认就是 fuse，
+      # 不带这个 tag 编出来的是另一套代码路径，测了也不算数。
+      - name: go vet
+        run: go vet -tags fuse ./...
+
+      - name: go test
+        run: go test -tags fuse ./...
+
+  build:
+    name: 构建镜像
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 只有配了 Docker Hub 凭据才推送。没配时仍然会构建，
+      # 这样 Dockerfile 的问题照样能在 CI 里暴露出来，而不是静默跳过。
+      - name: 检查是否具备推送凭据
+        id: creds
+        env:
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 Docker Hub
+        if: steps.creds.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=main-,enable={{is_default_branch}}
+            type=ref,event=pr
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # NAS 是 x86_64。要出 arm64 就改成 linux/amd64,linux/arm64，
+          # 但需要额外的 QEMU 步骤，构建时间大约翻倍。
+          platforms: linux/amd64
+          push: ${{ steps.creds.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 输出结果
+        run: |
+          if [ "${{ steps.creds.outputs.push }}" = "true" ]; then
+            echo "已推送以下标签：" >> "$GITHUB_STEP_SUMMARY"
+            echo '${{ steps.meta.outputs.tags }}' | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "仅构建未推送（PR 构建，或未配置 DOCKERHUB_TOKEN）。" >> "$GITHUB_STEP_SUMMARY"
+          fi
