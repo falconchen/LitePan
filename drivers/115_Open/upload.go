@@ -93,10 +93,10 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	}
 
 	rs.pickCode = pickNonEmpty(initData.PickCode.String(), rs.pickCode)
-	if fileSize <= singlePartUploadLimit {
-		rs.uploadPhase = "single_part"
-	} else {
+	if shouldUseMultipart(fileSize) {
 		rs.uploadPhase = "multipart"
+	} else {
+		rs.uploadPhase = "single_part"
 	}
 	persist115ResumeState(req.OnResumeState, rs, nil)
 
@@ -112,7 +112,9 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	}
 
 	var callback map[string]any
-	if fileSize <= singlePartUploadLimit {
+	if shouldUseMultipart(fileSize) {
+		callback, err = d.ossMultipartUpload(ctx, localPath, fileSize, rs.fileSHA1, token, initData, rs, req.OnProgress, req.OnResumeState)
+	} else {
 		callback, err = d.ossSinglePartUpload(ctx, localPath, fileSize, rs.fileSHA1, token, initData, req.OnProgress)
 		if isOSSCredentialError(err) {
 			token, err = d.ensureFreshOSSToken(ctx, token, true)
@@ -120,8 +122,6 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 				callback, err = d.ossSinglePartUpload(ctx, localPath, fileSize, rs.fileSHA1, token, initData, req.OnProgress)
 			}
 		}
-	} else {
-		callback, err = d.ossMultipartUpload(ctx, localPath, fileSize, rs.fileSHA1, token, initData, rs, req.OnProgress, req.OnResumeState)
 	}
 	if err != nil {
 		return nil, err
@@ -134,7 +134,11 @@ func shouldResumeMultipart(rs *uploadResumeState, fileSize int64) bool {
 	if rs == nil || rs.pickCode == "" {
 		return false
 	}
-	return rs.uploadPhase == "multipart" || rs.ossUploadID != "" || fileSize > singlePartUploadLimit
+	return rs.uploadPhase == "multipart" || rs.ossUploadID != "" || shouldUseMultipart(fileSize)
+}
+
+func shouldUseMultipart(fileSize int64) bool {
+	return fileSize > singlePartUploadLimit
 }
 
 func (d *Driver) prepare115UploadContext(
@@ -742,29 +746,12 @@ func buildUploadTarget(parentID string) string {
 }
 
 func calculateOSSPartSize(fileSize int64) int64 {
-	const mb = 1024 * 1024
-	const gb = 1024 * mb
-	const tb = 1024 * gb
-	partSize := int64(20 * mb)
-	if fileSize <= partSize {
+	partSize := int64(defaultUploadPartSize)
+	if fileSize <= partSize*maxOSSUploadParts {
 		return partSize
 	}
-	switch {
-	case fileSize > tb:
-		return 5 * gb
-	case fileSize > 768*gb:
-		return 109951163
-	case fileSize > 512*gb:
-		return 82463373
-	case fileSize > 384*gb:
-		return 54975582
-	case fileSize > 256*gb:
-		return 41231687
-	case fileSize > 128*gb:
-		return 27487791
-	default:
-		return partSize
-	}
+	// OSS 单次分片上传最多允许 10000 片；超大文件按上限反推片大小。
+	return (fileSize + maxOSSUploadParts - 1) / maxOSSUploadParts
 }
 
 func buildOSSURL(endpoint, bucket, objectName string, query map[string]string) string {
@@ -1315,22 +1302,12 @@ func (d *Driver) ossMultipartUpload(ctx context.Context, localPath string, fileS
 			partNumber++
 			continue
 		}
-		if _, err := f.Seek(offset, io.SeekStart); err != nil {
-			return nil, domain.Wrap(domain.CodeDriverError, err)
-		}
 		token, err = d.ensureFreshOSSToken(ctx, token, false)
 		if err != nil {
 			return nil, err
 		}
-		etag, err := d.ossUploadPart(ctx, token, bucket, objectName, uploadID, partNumber, f, currentPartSize, offset, fileSize, onProgress, totalParts)
-		if isOSSCredentialError(err) {
-			token, err = d.ensureFreshOSSToken(ctx, token, true)
-			if err == nil {
-				if _, err = f.Seek(offset, io.SeekStart); err == nil {
-					etag, err = d.ossUploadPart(ctx, token, bucket, objectName, uploadID, partNumber, f, currentPartSize, offset, fileSize, onProgress, totalParts)
-				}
-			}
-		}
+		var etag string
+		etag, token, err = d.ossUploadPartWithRetry(ctx, token, bucket, objectName, uploadID, partNumber, f, currentPartSize, offset, fileSize, onProgress, totalParts)
 		if err != nil {
 			return nil, err
 		}
@@ -1357,6 +1334,33 @@ func (d *Driver) ossMultipartUpload(ctx context.Context, localPath string, fileS
 		}
 	}
 	return callback, err
+}
+
+func (d *Driver) ossUploadPartWithRetry(ctx context.Context, token ossTokenData, bucket, objectName, uploadID string, partNumber int, f *os.File, partSize, uploadedOffset, totalSize int64, onProgress driver.UploadProgress, totalParts int) (string, ossTokenData, error) {
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return "", token, err
+		}
+		if _, err := f.Seek(uploadedOffset, io.SeekStart); err != nil {
+			return "", token, domain.Wrap(domain.CodeDriverError, err)
+		}
+		etag, err := d.ossUploadPart(ctx, token, bucket, objectName, uploadID, partNumber, f, partSize, uploadedOffset, totalSize, onProgress, totalParts)
+		if err == nil {
+			return etag, token, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return "", token, err
+		}
+		if isOSSCredentialError(err) {
+			token, err = d.ensureFreshOSSToken(ctx, token, true)
+			if err != nil {
+				return "", token, err
+			}
+		}
+	}
+	return "", token, lastErr
 }
 
 type uploadProgressReader struct {
