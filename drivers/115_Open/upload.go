@@ -29,6 +29,9 @@ import (
 
 const ossUploadAttempts = 3
 
+// ossUploadHTTPClient 返回用于 OSS 数据传输的客户端：它不设总超时，因为传输时长
+// 取决于文件大小和链路速度。所有直接面向 OSS 的请求都必须走它，尤其是
+// ossSinglePartUpload 和 ossUploadPart 这两条真正搬数据的路径。
 func (d *Driver) ossUploadHTTPClient() *http.Client {
 	if d.uploadClient != nil {
 		return d.uploadClient
@@ -1015,7 +1018,7 @@ func (d *Driver) ossDo(ctx context.Context, method, rawURL string, headers http.
 		}
 	}
 	req.Header.Set("User-Agent", ossUserAgent)
-	resp, data, err := httpx.Execute(d.client, req, httpx.DefaultReadLimit)
+	resp, data, err := httpx.Execute(d.ossUploadHTTPClient(), req, httpx.DefaultReadLimit)
 	if err != nil {
 		return nil, nil, domain.Wrap(domain.CodeDriverError, err)
 	}
