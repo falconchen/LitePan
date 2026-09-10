@@ -15,9 +15,13 @@ import (
 
 type Driver struct {
 	driver.AuthRefreshControl
-	add       Addition
-	client    *http.Client
-	oauthBase string
+	add Addition
+	// client 用于 115 的 JSON API：请求小、应当很快返回，30 秒总超时是合适的。
+	client *http.Client
+	// uploadClient 用于 OSS 数据传输：不设总超时，传输时长由文件大小和链路
+	// 速度决定，改用 ResponseHeaderTimeout 兜底僵死连接，取消交给 context。
+	uploadClient *http.Client
+	oauthBase    string
 
 	intervalGate driver.RequestIntervalGate
 	persist      driver.AuthPersistFunc
@@ -73,6 +77,12 @@ func (d *Driver) Init(ctx context.Context) error {
 	if d.client == nil {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 30 * time.Second})
 	}
+	if d.uploadClient == nil {
+		d.uploadClient = httpx.NewClient(httpx.ClientOptions{
+			Timeout:               -1,
+			ResponseHeaderTimeout: ossResponseHeaderTimeout,
+		})
+	}
 	d.mu.Lock()
 	token := d.token
 	refresh := d.refresh
@@ -97,6 +107,7 @@ func (d *Driver) Init(ctx context.Context) error {
 }
 
 func (d *Driver) Drop(context.Context) error {
+	httpx.CloseClient(d.uploadClient)
 	httpx.CloseClient(d.client)
 	return nil
 }
