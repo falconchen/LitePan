@@ -35,16 +35,18 @@ const (
 	pathUploadResume = "/open/upload/resume"
 	pathUploadToken  = "/open/upload/get_token"
 
-	defaultUA               = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-	defaultOperationDelayMS = 800
-	listPageFirst           = 300
-	listPageSecond          = 600
-	listPageFollow          = 1000
-	downloadPartSize        = 10 * 1024 * 1024
-	downloadConcurrency     = 2
-	downloadLinkTTL         = 5 * time.Minute
-	singlePartUploadLimit   = 512 * 1024 * 1024
-	preidHashSize           = 128 * 1024
+	defaultUA                     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+	defaultOperationDelayMS       = 800
+	listPageFirst                 = 300
+	listPageSecond                = 600
+	listPageFollow                = 1000
+	downloadPartSize              = 10 * 1024 * 1024
+	downloadConcurrency           = 2
+	downloadLinkTTL               = 5 * time.Minute
+	singlePartUploadLimit   int64 = 10 * 1024 * 1024
+	defaultUploadPartSize   int64 = 5 * 1024 * 1024
+	maxOSSUploadParts       int64 = 10000
+	preidHashSize                 = 128 * 1024
 	// 请求体发完之后等 OSS/115 返回响应头的上限。合并分片会触发 115 的回调，
 	// 那边要按 sha1 校验整个文件，大文件可能要等上一阵，所以给得比较宽松；
 	// 它只用来兜底彻底僵死的连接，正常传输不受影响。
