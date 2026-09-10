@@ -17,21 +17,59 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func TestUploadThresholdAndPartSize(t *testing.T) {
 	const mb = int64(1024 * 1024)
-	if got := singlePartUploadLimit; got != 10*mb {
-		t.Fatalf("singlePartUploadLimit = %d, want %d", got, 10*mb)
+
+	// 不填任何配置时应当回落到默认值
+	d := &Driver{}
+	if got := d.singlePartLimit(); got != 10*mb {
+		t.Fatalf("默认分片阈值 = %d, want %d", got, 10*mb)
 	}
-	if shouldUseMultipart(10 * mb) {
-		t.Fatal("10 MiB should use single-part upload")
+	if got := d.uploadPartSize(); got != 5*mb {
+		t.Fatalf("默认分片大小 = %d, want %d", got, 5*mb)
 	}
-	if !shouldUseMultipart(10*mb + 1) {
-		t.Fatal("a file larger than 10 MiB should use multipart upload")
+	if shouldUseMultipart(10*mb, d.singlePartLimit()) {
+		t.Fatal("10 MiB 应当走单片上传")
 	}
-	if got := calculateOSSPartSize(10*mb + 1); got != 5*mb {
+	if !shouldUseMultipart(10*mb+1, d.singlePartLimit()) {
+		t.Fatal("超过 10 MiB 应当走分片上传")
+	}
+
+	// 用户自定义
+	custom := &Driver{add: Addition{SinglePartLimitMB: "64", UploadPartSizeMB: "16"}}
+	if got := custom.singlePartLimit(); got != 64*mb {
+		t.Fatalf("自定义分片阈值 = %d, want %d", got, 64*mb)
+	}
+	if got := custom.uploadPartSize(); got != 16*mb {
+		t.Fatalf("自定义分片大小 = %d, want %d", got, 16*mb)
+	}
+
+	// 非法输入回落默认值
+	for _, bad := range []flexString{"", "0", "-3", "abc"} {
+		bd := &Driver{add: Addition{SinglePartLimitMB: bad, UploadPartSizeMB: bad}}
+		if got := bd.singlePartLimit(); got != 10*mb {
+			t.Fatalf("输入 %q 时分片阈值 = %d, want 默认 %d", bad, got, 10*mb)
+		}
+		if got := bd.uploadPartSize(); got != 5*mb {
+			t.Fatalf("输入 %q 时分片大小 = %d, want 默认 %d", bad, got, 5*mb)
+		}
+	}
+
+	// 超出范围要夹到边界，不能直接透传给 OSS
+	tooBig := &Driver{add: Addition{SinglePartLimitMB: "999999", UploadPartSizeMB: "999999"}}
+	if got := tooBig.singlePartLimit(); got != int64(maxSinglePartLimitMB)*mb {
+		t.Fatalf("过大的分片阈值 = %d, want 夹到 %d", got, int64(maxSinglePartLimitMB)*mb)
+	}
+	if got := tooBig.uploadPartSize(); got != int64(maxUploadPartSizeMB)*mb {
+		t.Fatalf("过大的分片大小 = %d, want 夹到 %d", got, int64(maxUploadPartSizeMB)*mb)
+	}
+
+	// 期望片大小能用时原样返回
+	if got := calculateOSSPartSize(10*mb+1, 5*mb); got != 5*mb {
 		t.Fatalf("calculateOSSPartSize = %d, want %d", got, 5*mb)
 	}
+	// 片数超过 OSS 上限时必须自动放大片大小
 	tooLarge := int64(defaultUploadPartSize)*maxOSSUploadParts + 1
-	if got := calculateOSSPartSize(tooLarge); (tooLarge+got-1)/got > maxOSSUploadParts {
-		t.Fatalf("part count exceeds OSS limit: size=%d partSize=%d", tooLarge, got)
+	if got := calculateOSSPartSize(tooLarge, defaultUploadPartSize); (tooLarge+got-1)/got > maxOSSUploadParts {
+		t.Fatalf("片数超出 OSS 上限: size=%d partSize=%d", tooLarge, got)
 	}
 }
 
