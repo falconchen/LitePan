@@ -73,7 +73,8 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	}
 	rs = prepared
 
-	if shouldResumeMultipart(rs, fileSize) {
+	singlePartLimit := d.singlePartLimit()
+	if shouldResumeMultipart(rs, fileSize, singlePartLimit) {
 		uploadutil.NotifyProgress(req.OnProgress, rs.uploadedBytes, fileSize, "正在恢复 115 分片上传")
 		callback, err := d.resumeMultipartUpload(ctx, localPath, fileSize, rs, req.OnProgress, req.OnResumeState)
 		if err != nil {
@@ -93,7 +94,7 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	}
 
 	rs.pickCode = pickNonEmpty(initData.PickCode.String(), rs.pickCode)
-	if shouldUseMultipart(fileSize) {
+	if shouldUseMultipart(fileSize, singlePartLimit) {
 		rs.uploadPhase = "multipart"
 	} else {
 		rs.uploadPhase = "single_part"
@@ -112,7 +113,7 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	}
 
 	var callback map[string]any
-	if shouldUseMultipart(fileSize) {
+	if shouldUseMultipart(fileSize, singlePartLimit) {
 		callback, err = d.ossMultipartUpload(ctx, localPath, fileSize, rs.fileSHA1, token, initData, rs, req.OnProgress, req.OnResumeState)
 	} else {
 		callback, err = d.ossSinglePartUpload(ctx, localPath, fileSize, rs.fileSHA1, token, initData, req.OnProgress)
@@ -130,15 +131,15 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	return d.buildUploadSuccessResult(ctx, callback, parentID, rs.resolvedName, fileSize, rs.fileSHA1)
 }
 
-func shouldResumeMultipart(rs *uploadResumeState, fileSize int64) bool {
+func shouldResumeMultipart(rs *uploadResumeState, fileSize, singlePartLimit int64) bool {
 	if rs == nil || rs.pickCode == "" {
 		return false
 	}
-	return rs.uploadPhase == "multipart" || rs.ossUploadID != "" || shouldUseMultipart(fileSize)
+	return rs.uploadPhase == "multipart" || rs.ossUploadID != "" || shouldUseMultipart(fileSize, singlePartLimit)
 }
 
-func shouldUseMultipart(fileSize int64) bool {
-	return fileSize > singlePartUploadLimit
+func shouldUseMultipart(fileSize, singlePartLimit int64) bool {
+	return fileSize > singlePartLimit
 }
 
 func (d *Driver) prepare115UploadContext(
@@ -745,8 +746,11 @@ func buildUploadTarget(parentID string) string {
 	return "U_1_" + pid
 }
 
-func calculateOSSPartSize(fileSize int64) int64 {
-	partSize := int64(defaultUploadPartSize)
+func calculateOSSPartSize(fileSize, want int64) int64 {
+	partSize := want
+	if partSize <= 0 {
+		partSize = defaultUploadPartSize
+	}
 	if fileSize <= partSize*maxOSSUploadParts {
 		return partSize
 	}
@@ -1206,7 +1210,13 @@ func (d *Driver) ossMultipartUpload(ctx context.Context, localPath string, fileS
 		return nil, domain.Errorf(domain.CodeDriverError, "115 上传凭证不完整，缺少 endpoint、bucket 或 object")
 	}
 
-	partSize := calculateOSSPartSize(fileSize)
+	// 片大小优先沿用断点里记录的值：用户中途改了配置再续传时，
+	// 若按新配置重算会导致分片错位、拼出损坏的文件。
+	partSize := rs.partSize
+	if partSize <= 0 {
+		partSize = calculateOSSPartSize(fileSize, d.uploadPartSize())
+		rs.partSize = partSize
+	}
 	totalParts := int((fileSize + partSize - 1) / partSize)
 	if totalParts < 1 {
 		totalParts = 1
@@ -1438,6 +1448,9 @@ type uploadResumeState struct {
 	object        string
 	ossUploadID   string
 	uploadedBytes int64
+	// partSize 记录本次分片上传实际采用的片大小。必须持久化：用户改了
+	// 账号配置之后再续传，若按新值重算会与已上传的分片错位。
+	partSize int64
 }
 
 func normalize115ResumeState(state map[string]any, parentID, targetName string, fileSize int64, fileSHA1 string) *uploadResumeState {
@@ -1469,6 +1482,9 @@ func normalize115ResumeState(state map[string]any, parentID, targetName string, 
 		ossUploadID:   strings.TrimSpace(uploadutil.AnyString(state["oss_upload_id"])),
 		uploadedBytes: uploadutil.ResumeStateUploadedBytes(state),
 	}
+	if v, ok := uploadutil.MapInt64(state["part_size"]); ok && v > 0 {
+		out.partSize = v
+	}
 	if out.resolvedName == "" {
 		out.resolvedName = targetName
 	}
@@ -1492,6 +1508,7 @@ func persist115ResumeState(onState driver.UploadStateCallback, rs *uploadResumeS
 		"object":         rs.object,
 		"oss_upload_id":  rs.ossUploadID,
 		"uploaded_bytes": rs.uploadedBytes,
+		"part_size":      rs.partSize,
 	}
 	for k, v := range extra {
 		if v != nil {
