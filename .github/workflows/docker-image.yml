@@ -76,6 +76,9 @@ jobs:
             echo "IMAGES_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # 构建 arm64 需要 QEMU 模拟（runner 本身是 x86_64）
+      - uses: docker/setup-qemu-action@v3
+
       - uses: docker/setup-buildx-action@v3
 
       - name: 登录 GHCR
@@ -107,9 +110,11 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          # NAS 是 x86_64。要出 arm64 就改成 linux/amd64,linux/arm64，
-          # 但需要额外的 QEMU 步骤，构建时间大约翻倍。
-          platforms: linux/amd64
+          # arm64 那一半是在 QEMU 里模拟执行的，Go 编译和 vite 构建都会明显变慢。
+          # 如果构建时间变得难以接受，改用原生 arm64 runner（ubuntu-24.04-arm，
+          # 公开仓库免费）分架构构建再合并 manifest，速度接近原生但 workflow 会
+          # 复杂不少。
+          platforms: linux/amd64,linux/arm64
           push: ${{ steps.targets.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
