@@ -10,7 +10,10 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: falconchen/litepan
+  # GHCR 的镜像名必须全小写，而 github.repository 是 falconchen/LitePan，
+  # 所以这里写死而不是从上下文取。
+  GHCR_IMAGE: ghcr.io/falconchen/litepan
+  DOCKERHUB_IMAGE: falconchen/litepan
 
 # 同一分支上只保留最新一次运行，旧的直接取消，避免连续推送时排队浪费额度
 concurrency:
@@ -42,26 +45,49 @@ jobs:
     name: 构建镜像
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # 推 GHCR 需要，GITHUB_TOKEN 自动具备
     steps:
       - uses: actions/checkout@v4
 
-      # 只有配了 Docker Hub 凭据才推送。没配时仍然会构建，
-      # 这样 Dockerfile 的问题照样能在 CI 里暴露出来，而不是静默跳过。
-      - name: 检查是否具备推送凭据
-        id: creds
+      # GHCR 用 GITHUB_TOKEN，零配置，始终可推；
+      # Docker Hub 依赖手工配置的 secret，没配就只推 GHCR，不让 CI 变红。
+      - name: 决定推送目标
+        id: targets
         env:
-          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -n "$TOKEN" ] && [ "${{ github.event_name }}" != "pull_request" ]; then
-            echo "push=true" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            push=false
+            dockerhub=false
           else
-            echo "push=false" >> "$GITHUB_OUTPUT"
+            push=true
+            [ -n "$DOCKERHUB_TOKEN" ] && dockerhub=true || dockerhub=false
           fi
+          echo "push=$push" >> "$GITHUB_OUTPUT"
+          echo "dockerhub=$dockerhub" >> "$GITHUB_OUTPUT"
+
+          # metadata-action 会为列出的每个镜像名各生成一套标签
+          {
+            echo "images<<IMAGES_EOF"
+            echo "$GHCR_IMAGE"
+            [ "$dockerhub" = "true" ] && echo "$DOCKERHUB_IMAGE"
+            echo "IMAGES_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
+      - name: 登录 GHCR
+        if: steps.targets.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: 登录 Docker Hub
-        if: steps.creds.outputs.push == 'true'
+        if: steps.targets.outputs.dockerhub == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -71,7 +97,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE_NAME }}
+          images: ${{ steps.targets.outputs.images }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=main-,enable={{is_default_branch}}
@@ -84,7 +110,7 @@ jobs:
           # NAS 是 x86_64。要出 arm64 就改成 linux/amd64,linux/arm64，
           # 但需要额外的 QEMU 步骤，构建时间大约翻倍。
           platforms: linux/amd64
-          push: ${{ steps.creds.outputs.push == 'true' }}
+          push: ${{ steps.targets.outputs.push == 'true' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -92,9 +118,13 @@ jobs:
 
       - name: 输出结果
         run: |
-          if [ "${{ steps.creds.outputs.push }}" = "true" ]; then
-            echo "已推送以下标签：" >> "$GITHUB_STEP_SUMMARY"
-            echo '${{ steps.meta.outputs.tags }}' | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "仅构建未推送（PR 构建，或未配置 DOCKERHUB_TOKEN）。" >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.targets.outputs.push }}" != "true" ]; then
+            echo "仅构建未推送（PR 构建）。" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "已推送以下标签：" >> "$GITHUB_STEP_SUMMARY"
+          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.targets.outputs.dockerhub }}" != "true" ]; then
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "未配置 DOCKERHUB_TOKEN，本次只推了 GHCR。" >> "$GITHUB_STEP_SUMMARY"
           fi
