@@ -135,16 +135,45 @@ func (s *Server) servePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 大文件转交上传任务队列，立刻应答，避免客户端等不住而取消请求。
-	if s.enqueueUpload(plan, tmpPath, info.Size()) {
+	// WebDAV 文件统一交给上传任务队列，并等待任务真正完成后再向客户端应答。
+	// 等待使用请求 context，但任务使用 Manager 自己的 context；即使客户端断开，
+	// 后台上传也会继续执行。
+	if task, err := s.createUploadTask(plan, tmpPath, info.Size()); err != nil {
+		s.log.Warn("webdav 创建上传任务失败", "file", plan.fileName, "err", err)
+		http.Error(w, "Unable to create upload task", http.StatusInternalServerError)
+		return
+	} else if task != nil {
 		handedOff = true
-		// 让客户端随后的 PROPFIND 能看到这个文件；此刻它还在队列里，
-		// 上传失败的话缓存会在下次刷新时被纠正。
-		s.fs.resolver.rememberFile(ctx, plan.accountID, parsed.RelParts, plan.parentID, domain.FileItem{
-			Name:    plan.fileName,
-			Size:    info.Size(),
-			ModTime: time.Now(),
-		})
+		finished, err := s.fs.uploads.Wait(ctx, task.TaskID)
+		if err != nil {
+			// 客户端断开只结束等待，不能影响已接管临时文件的后台任务。
+			if ctx.Err() != nil {
+				s.log.Info("webdav 客户端断开，上传任务继续后台执行",
+					"file", plan.fileName, "task_id", task.TaskID)
+				return
+			}
+			s.log.Warn("webdav 等待上传任务失败",
+				"file", plan.fileName, "task_id", task.TaskID, "err", err)
+			http.Error(w, "Upload task unavailable", http.StatusInternalServerError)
+			return
+		}
+		if finished.Status != upload.StatusSuccess && finished.Status != upload.StatusSkipped {
+			errMsg := finished.Error
+			if errMsg == "" {
+				errMsg = "Upload failed"
+			}
+			s.log.Warn("webdav 上传任务未成功",
+				"file", plan.fileName, "task_id", task.TaskID,
+				"status", finished.Status, "err", finished.Error)
+			http.Error(w, errMsg, http.StatusBadGateway)
+			return
+		}
+
+		item := fileItemFromUploadTask(finished, plan.fileName, info.Size())
+		s.fs.resolver.rememberFile(ctx, plan.accountID, parsed.RelParts, plan.parentID, item)
+		if item.ID != "" {
+			w.Header().Set("ETag", stableFileETag(item))
+		}
 		if plan.existed {
 			w.WriteHeader(http.StatusNoContent)
 		} else {
@@ -217,49 +246,53 @@ func writeUploadErr(w http.ResponseWriter, err error) {
 	http.Error(w, "Upload failed", http.StatusConflict)
 }
 
-// asyncUploadThreshold 决定 WebDAV 上传走同步还是任务队列。
-//
-// WebDAV 的 PUT 语义是"返回 201 即表示已存好"，所以默认必须同步——客户端要
-// 依据响应判断成败。但同步意味着整个 PUT 请求要挂到网盘上传结束为止：慢上行
-// 链路下一个几百 MB 的文件要传好几分钟，客户端（或中间的反代）往往先超时
-// 断开，请求 context 随之取消，连带把正在进行的网盘上传也掐断，白传。
-//
-// 超过该阈值的文件因此改为交给上传任务队列：立刻应答，上传在后台进行，可在
-// 管理页看到进度，并获得重试与断点续传。代价是这时的 201 只表示"已接收并
-// 排队"，真正失败客户端不会知道——所以阈值取得较大，只让那些同步几乎必然被
-// 客户端超时掐断的大文件走这条路。
-const asyncUploadThreshold = 64 << 20 // 64 MiB
-
-// enqueueUpload 尝试把这次上传交给任务队列。返回 true 表示已接管，调用方应当
-// 直接应答成功，并且不要删除临时文件。
-//
-// 任何一步不满足都返回 false 退回同步上传：同步总能给出确定的结果，比让
-// 客户端收到一个失败的 PUT 要好。
-func (s *Server) enqueueUpload(plan *uploadPlan, tmpPath string, size int64) bool {
-	if s.fs == nil || s.fs.uploads == nil || size <= asyncUploadThreshold {
-		return false
+// createUploadTask 把 WebDAV 已完整接收的临时文件交给任务队列。返回 nil task
+// 表示当前 Server 没有配置上传管理器，调用方应兼容性地退回同步上传。
+func (s *Server) createUploadTask(plan *uploadPlan, tmpPath string, size int64) (*upload.Task, error) {
+	if s.fs == nil || s.fs.uploads == nil {
+		return nil, nil
 	}
-	// 这里刻意用 context.Background() 而不是请求的 ctx：后者在客户端断开时
-	// 会被取消，而建任务这一步不该受此影响。任务本身由 Manager 用自己的根
-	// context 执行，同样不受请求生命周期约束。
-	if _, err := s.fs.uploads.CreateServerLocalTask(context.Background(), upload.ServerLocalCreateParams{
+	task, err := s.fs.uploads.CreateServerLocalTask(context.Background(), upload.ServerLocalCreateParams{
 		AccountID:        plan.accountID,
 		AccountName:      plan.accountName,
 		DriverType:       plan.driverType,
 		FileName:         plan.fileName,
 		DisplayName:      plan.fileName,
+		SourceType:       upload.SourceTypeWebDAV,
 		TargetPath:       plan.parentID,
 		LocalPath:        tmpPath,
 		CleanupLocalMode: upload.CleanupLocalFileOnSuccess,
 		CleanupLocalPath: tmpPath,
 		TotalBytes:       size,
 		ConflictPolicy:   "overwrite",
-	}); err != nil {
-		s.log.Warn("webdav 转上传任务失败，退回同步上传",
-			"file", plan.fileName, "err", err)
-		return false
+	})
+	if err != nil {
+		return nil, err
 	}
-	s.log.Info("webdav 大文件转入上传队列",
-		"file", plan.fileName, "size", size, "account", plan.accountName)
-	return true
+	s.log.Info("webdav 文件转入上传队列",
+		"file", plan.fileName, "size", size, "account", plan.accountName,
+		"task_id", task.TaskID)
+	return task, nil
+}
+
+func fileItemFromUploadTask(task *upload.Task, fallbackName string, fallbackSize int64) domain.FileItem {
+	item := domain.FileItem{
+		Name:    fallbackName,
+		Size:    fallbackSize,
+		ModTime: time.Now(),
+	}
+	if task == nil || task.Result == nil {
+		return item
+	}
+	if id, ok := task.Result["file_id"].(string); ok {
+		item.ID = id
+		item.IDKind = domain.IDStable
+	}
+	if name, ok := task.Result["file_name"].(string); ok && name != "" {
+		item.Name = name
+	}
+	if size, ok := task.Result["size"].(int64); ok {
+		item.Size = size
+	}
+	return item
 }

@@ -408,7 +408,7 @@ func (m *Manager) CreateServerLocalTasks(ctx context.Context, params []ServerLoc
 		if sourceType == "" {
 			sourceType = SourceTypeOfflineHandoff
 		}
-		if sourceType != SourceTypeOfflineHandoff && sourceType != SourceTypeServerLocal {
+		if sourceType != SourceTypeOfflineHandoff && sourceType != SourceTypeServerLocal && sourceType != SourceTypeWebDAV {
 			return nil, domain.Errorf(domain.CodeValidation, "服务器上传来源类型不合法")
 		}
 		if p.ClientTaskID != "" {
@@ -535,6 +535,37 @@ func (m *Manager) Get(_ context.Context, taskID string) (*Task, bool) {
 	}
 	t := m.snapshot(st)
 	return t, true
+}
+
+// Wait 等待任务当前这一轮执行结束并返回最终快照。等待方的 context 只控制
+// 等待本身，不会取消任务；上传任务始终由 Manager 自己的 runCtx 驱动。
+func (m *Manager) Wait(ctx context.Context, taskID string) (*Task, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	m.mu.Lock()
+	st, ok := m.tasks[taskID]
+	if !ok {
+		m.mu.Unlock()
+		return nil, domain.Errorf(domain.CodeNotFound, "上传任务不存在")
+	}
+	done := st.runDone
+	m.mu.Unlock()
+	if done == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "上传任务状态异常")
+	}
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+
+	task, ok := m.Get(context.Background(), taskID)
+	if !ok {
+		return nil, domain.Errorf(domain.CodeNotFound, "上传任务不存在")
+	}
+	return task, nil
 }
 
 func (m *Manager) RemoveTasksByAccount(ctx context.Context, accountID int64) (int64, error) {
