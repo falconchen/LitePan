@@ -117,6 +117,50 @@ services:
 > **不要用 `ponphil/litepan:latest` 部署本仓库对应的 Go 版。**  
 > `latest` 仍是 Python 旧版镜像。若你需要旧版程序与 Compose 脚本，请前往归档仓库：[LitePan-old](https://github.com/Ponphil/LitePan-old)。
 
+### 本仓库自建的双架构镜像
+
+上面的 `ponphil/litepan` 是上游发布的镜像。本仓库另有一套由 GitHub Actions
+自动构建的镜像，`main` 每次更新即触发，同时提供 **`linux/amd64` 与
+`linux/arm64`**（两个架构分别在各自的原生 runner 上构建，再合并成一个
+manifest list，拉取时自动选对架构）。
+
+推送到两个 registry，内容完全一致，任选其一：
+
+```
+ghcr.io/falconchen/litepan     # 公开，拉取无需登录
+falconchen/litepan             # Docker Hub
+```
+
+标签有两种：
+
+| 标签 | 说明 |
+| --- | --- |
+| `latest` | 始终跟随 `main` 最新提交，会随之变动 |
+| `main-<短 sha>` | 钉在某次提交上，内容不变 |
+
+**生产环境建议用 `main-<sha>` 而不是 `latest`**，避免下次 `docker compose pull`
+时被动升级到未验证的版本。
+
+```yaml
+services:
+  litepan:
+    image: ghcr.io/falconchen/litepan:main-1e241ef
+```
+
+确认某个标签包含哪些架构：
+
+```bash
+docker manifest inspect ghcr.io/falconchen/litepan:latest \
+  | jq -r '.manifests[].platform
+           | select(.architecture != "unknown")
+           | "\(.os)/\(.architecture)"'
+# linux/amd64
+# linux/arm64
+```
+
+> 这里过滤掉 `unknown` 是因为 buildx 会额外附带一条 attestation 记录，
+> 它的 platform 显示为 `unknown/unknown`，并不是可运行的架构。
+
 ## ▎ 支持
 
 <table>
