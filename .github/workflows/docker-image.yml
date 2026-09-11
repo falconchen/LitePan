@@ -1,7 +1,7 @@
 name: 构建镜像
 
 # main 更新时自动构建并推送镜像；PR 只构建不推送，用于在合并前验证
-# Dockerfile 仍然可用。也可以在 Actions 页面手动触发。
+# Dockerfile 在两个架构上都还能编译。也可以在 Actions 页面手动触发。
 on:
   push:
     branches: [main]
@@ -15,7 +15,6 @@ env:
   GHCR_IMAGE: ghcr.io/falconchen/litepan
   DOCKERHUB_IMAGE: falconchen/litepan
 
-# 同一分支上只保留最新一次运行，旧的直接取消，避免连续推送时排队浪费额度
 concurrency:
   group: docker-image-${{ github.ref }}
   cancel-in-progress: true
@@ -41,48 +40,116 @@ jobs:
       - name: go test
         run: go test -tags fuse ./...
 
+  # 每个架构在各自的原生 runner 上构建。早先试过在 x86 runner 上用 QEMU 模拟
+  # 出 arm64，构建步骤跑了 7 分钟还没完（纯 amd64 时整个 workflow 不到 3 分钟），
+  # 主要耗在 Go 编译和 vite 构建上，所以改成原生。
+  # ubuntu-24.04-arm 对公开仓库免费。
   build:
-    name: 构建镜像
+    name: 构建 ${{ matrix.platform }}
     needs: test
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: write # 推 GHCR 需要，GITHUB_TOKEN 自动具备
+      packages: write
     steps:
       - uses: actions/checkout@v4
 
-      # GHCR 用 GITHUB_TOKEN，零配置，始终可推；
-      # Docker Hub 依赖手工配置的 secret，没配就只推 GHCR，不让 CI 变红。
-      - name: 决定推送目标
-        id: targets
-        env:
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: 决定是否推送
+        id: mode
         run: |
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            push=false
-            dockerhub=false
+            echo "push=false" >> "$GITHUB_OUTPUT"
           else
-            push=true
-            [ -n "$DOCKERHUB_TOKEN" ] && dockerhub=true || dockerhub=false
+            echo "push=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "push=$push" >> "$GITHUB_OUTPUT"
-          echo "dockerhub=$dockerhub" >> "$GITHUB_OUTPUT"
-
-          # metadata-action 会为列出的每个镜像名各生成一套标签
-          {
-            echo "images<<IMAGES_EOF"
-            echo "$GHCR_IMAGE"
-            [ "$dockerhub" = "true" ] && echo "$DOCKERHUB_IMAGE"
-            echo "IMAGES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # 构建 arm64 需要 QEMU 模拟（runner 本身是 x86_64）
-      - uses: docker/setup-qemu-action@v3
 
       - uses: docker/setup-buildx-action@v3
 
       - name: 登录 GHCR
-        if: steps.targets.outputs.push == 'true'
+        if: steps.mode.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # PR 只验证该架构能不能构建，不产生任何产物
+      - name: 构建（不推送）
+        if: steps.mode.outputs.push != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          push: false
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      # 推送时只按 digest 推、不打标签：两个架构是各自独立的 job，
+      # 谁先推完都不该抢占标签。标签统一留到 merge 阶段再打。
+      - name: 按 digest 推送
+        id: build
+        if: steps.mode.outputs.push == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.GHCR_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: 导出 digest
+        if: steps.mode.outputs.push == 'true'
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: 上传 digest
+        if: steps.mode.outputs.push == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          # 构件名不能重复，platform 里的斜杠要换掉
+          name: digests-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # 把两个架构的 digest 合并成一个 manifest list，这时候才打标签
+  merge:
+    name: 合并 manifest
+    needs: build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: 下载 digest
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: 决定是否推 Docker Hub
+        id: dh
+        env:
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          [ -n "$TOKEN" ] && v=true || v=false
+          echo "enabled=$v" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -90,7 +157,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 登录 Docker Hub
-        if: steps.targets.outputs.dockerhub == 'true'
+        if: steps.dh.outputs.enabled == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -100,36 +167,35 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.targets.outputs.images }}
+          images: ${{ env.GHCR_IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=main-,enable={{is_default_branch}}
-            type=ref,event=pr
 
-      - name: 构建并推送
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          # arm64 那一半是在 QEMU 里模拟执行的，Go 编译和 vite 构建都会明显变慢。
-          # 如果构建时间变得难以接受，改用原生 arm64 runner（ubuntu-24.04-arm，
-          # 公开仓库免费）分架构构建再合并 manifest，速度接近原生但 workflow 会
-          # 复杂不少。
-          platforms: linux/amd64,linux/arm64
-          push: ${{ steps.targets.outputs.push == 'true' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: 合并并推送 GHCR
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${GHCR_IMAGE}@sha256:%s " *)
+
+      # 两个 registry 里的 manifest 内容一致，所以直接从 GHCR 复制过去，
+      # 不用重新构建一遍。
+      - name: 复制到 Docker Hub
+        if: steps.dh.outputs.enabled == 'true'
+        run: |
+          for tag in $(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON"); do
+            docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:${tag##*:}" "$tag"
+          done
 
       - name: 输出结果
         run: |
-          if [ "${{ steps.targets.outputs.push }}" != "true" ]; then
-            echo "仅构建未推送（PR 构建）。" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          echo "已推送以下标签：" >> "$GITHUB_STEP_SUMMARY"
-          echo '${{ steps.meta.outputs.tags }}' | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
-          if [ "${{ steps.targets.outputs.dockerhub }}" != "true" ]; then
+          echo "已推送（linux/amd64 + linux/arm64）：" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON" | sed 's/^/  - /' >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.dh.outputs.enabled }}" = "true" ]; then
+            jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON" \
+              | sed "s#.*:#  - ${DOCKERHUB_IMAGE}:#" >> "$GITHUB_STEP_SUMMARY"
+          else
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "未配置 DOCKERHUB_TOKEN，本次只推了 GHCR。" >> "$GITHUB_STEP_SUMMARY"
           fi
