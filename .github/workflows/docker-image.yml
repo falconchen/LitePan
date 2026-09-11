@@ -24,9 +24,9 @@ jobs:
     name: 测试
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # 跟随 go.mod 里声明的版本，避免和 Dockerfile 里的 golang 镜像脱节
           go-version-file: go.mod
@@ -60,7 +60,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 决定是否推送
         id: mode
