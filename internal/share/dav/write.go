@@ -11,7 +11,7 @@ import (
 
 // 注意：WebDAV 的 PUT 由 Server.servePut 直接处理（见 server.go 的方法分发），
 // 不会走到这里。本文件这条路径留给 webdav.Handler 内部可能触发的写入。
-// 大文件转异步上传的逻辑只在 servePut 里实现，别在这边重复一份。
+// 上传任务队列逻辑只在 servePut 里实现，别在这边重复一份。
 
 func (fs *FileSystem) openUpload(ctx context.Context, name string, flag int) (webdav.File, error) {
 	exclusive := flag&os.O_EXCL != 0
