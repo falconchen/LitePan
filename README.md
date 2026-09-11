@@ -10,11 +10,12 @@
 &nbsp;
 <a href="https://space.bilibili.com/1501989416"><img src="https://img.shields.io/badge/Bilibili-交流与演示-00A1D6?style=for-the-badge&logo=bilibili&logoColor=white&labelColor=1B1B2F" alt="Bilibili"></a>
 &nbsp;
-<a href="https://hub.docker.com/r/ponphil/litepan"><img src="https://img.shields.io/badge/Docker-ponphil%2Flitepan-2496ED?style=for-the-badge&logo=docker&logoColor=white&labelColor=1B1B2F" alt="Docker"></a>
+<a href="https://github.com/falconchen/LitePan/pkgs/container/litepan"><img src="https://img.shields.io/badge/GHCR-falconchen%2Flitepan-2496ED?style=for-the-badge&logo=docker&logoColor=white&labelColor=1B1B2F" alt="GHCR"></a>
 
 
-[![docker-pulls][docker-pulls-shield]][docker-url]
-[![version][version-shield]][docker-url]
+[![build][build-shield]][build-url]
+[![platforms][platforms-shield]][ghcr-url]
+[![docker-pulls][docker-pulls-shield]][dockerhub-url]
 [![license][license-shield]][license-url]
 
 </div>
@@ -24,6 +25,15 @@
 > [!CAUTION]
 > 当前仓库是正在开发中的 **Go 版 LitePan**，首次发布可能问题较多，请谨慎测试。
 > Python 旧版已归档至 [LitePan-old](https://github.com/Ponphil/LitePan-old)。
+
+> [!NOTE]
+> **本仓库是 [Ponphil/LitePan](https://github.com/Ponphil/LitePan) 的 fork**，
+> 在上游基础上做了改动并自行构建发布镜像（`ghcr.io/falconchen/litepan`、
+> `falconchen/litepan`），与上游发布的 `ponphil/litepan` 是两套镜像。
+>
+> 软件遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)，**仅限非商业用途**。
+>
+> Required Notice: Copyright Ponphil (2026)
 
 
 <br>
@@ -77,12 +87,13 @@
 
 ## ▎ 快速开始
 
-**Docker Compose 部署** · 镜像标签：`Beta`或指定`v0.5.4-Beta`
+**Docker Compose 部署** · 镜像由本仓库 CI 构建，同时支持 `amd64` 与 `arm64`
 
 ```yaml
 services:
   litepan:
-    image: ponphil/litepan:beta
+    # latest 跟随 main 变动；生产环境建议钉到 main-<sha>，见下文
+    image: ghcr.io/falconchen/litepan:latest
     container_name: litepan
     restart: unless-stopped
     ports:
@@ -117,12 +128,11 @@ services:
 > **不要用 `ponphil/litepan:latest` 部署本仓库对应的 Go 版。**  
 > `latest` 仍是 Python 旧版镜像。若你需要旧版程序与 Compose 脚本，请前往归档仓库：[LitePan-old](https://github.com/Ponphil/LitePan-old)。
 
-### 本仓库自建的双架构镜像
+### 镜像与标签
 
-上面的 `ponphil/litepan` 是上游发布的镜像。本仓库另有一套由 GitHub Actions
-自动构建的镜像，`main` 每次更新即触发，同时提供 **`linux/amd64` 与
-`linux/arm64`**（两个架构分别在各自的原生 runner 上构建，再合并成一个
-manifest list，拉取时自动选对架构）。
+镜像由 GitHub Actions 自动构建，`main` 每次更新即触发，同时提供
+**`linux/amd64` 与 `linux/arm64`**（两个架构分别在各自的原生 runner 上
+构建，再合并成一个 manifest list，拉取时自动选对架构）。
 
 推送到两个 registry，内容完全一致，任选其一：
 
@@ -194,8 +204,11 @@ docker manifest inspect ghcr.io/falconchen/litepan:latest \
 [PolyForm Noncommercial 1.0.0](./LICENSE) — 个人学习与非商业使用，**禁止商用**。  
 第三方依赖见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。请遵守各网盘服务条款与当地法规。
 
-[docker-pulls-shield]: https://img.shields.io/docker/pulls/ponphil/litepan?logo=docker&logoColor=white&style=flat-square
-[version-shield]: https://img.shields.io/badge/Version-v0.5.4--Beta-6C63FF?style=flat-square
+[build-shield]: https://img.shields.io/github/actions/workflow/status/falconchen/LitePan/docker-image.yml?branch=main&label=build&logo=githubactions&logoColor=white&style=flat-square
+[build-url]: https://github.com/falconchen/LitePan/actions/workflows/docker-image.yml
+[platforms-shield]: https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-2496ED?style=flat-square
+[ghcr-url]: https://github.com/falconchen/LitePan/pkgs/container/litepan
+[docker-pulls-shield]: https://img.shields.io/docker/pulls/falconchen/litepan?logo=docker&logoColor=white&style=flat-square
+[dockerhub-url]: https://hub.docker.com/r/falconchen/litepan
 [license-shield]: https://img.shields.io/badge/License-PolyForm%20NC-red?style=flat-square
-[docker-url]: https://hub.docker.com/r/ponphil/litepan
 [license-url]: ./LICENSE
