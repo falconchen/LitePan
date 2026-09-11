@@ -10,14 +10,17 @@ import (
 
 	"litepan/internal/domain"
 	"litepan/internal/driver"
+	"litepan/internal/upload"
 )
 
 type uploadPlan struct {
-	accountID int64
-	parentID  string
-	fileName  string
-	existed   bool
-	noop      bool
+	accountID   int64
+	accountName string
+	driverType  string
+	parentID    string
+	fileName    string
+	existed     bool
+	noop        bool
 }
 
 func (fs *FileSystem) planUpload(ctx context.Context, webPath string, exclusive bool) (*uploadPlan, error) {
@@ -56,10 +59,12 @@ func (fs *FileSystem) planUpload(ctx context.Context, webPath string, exclusive 
 		}
 	}
 	return &uploadPlan{
-		accountID: acc.ID,
-		parentID:  parentID,
-		fileName:  fileName,
-		existed:   existed,
+		accountID:   acc.ID,
+		accountName: acc.Name,
+		driverType:  acc.DriverType,
+		parentID:    parentID,
+		fileName:    fileName,
+		existed:     existed,
 	}, nil
 }
 
@@ -80,13 +85,22 @@ func (s *Server) servePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmp, tmpPath, release, err := createWebDAVTempFile(s.fs.dataDir, plan.fileName, s.fs.tempRegistry)
+	tmp, tmpPath, untrack, release, err := createWebDAVTempFile(s.fs.dataDir, plan.fileName, s.fs.tempRegistry)
 	if err != nil {
 		s.log.Warn("webdav put temp file", "path", webPath, "err", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	defer release()
+	// 临时文件若被上传任务接管，删除时机就归任务管（上传成功后按
+	// CleanupLocalFileOnSuccess 处理），这里只能取消登记不能删。
+	handedOff := false
+	defer func() {
+		if handedOff {
+			untrack()
+			return
+		}
+		release()
+	}()
 
 	if _, err := io.Copy(tmp, r.Body); err != nil {
 		_ = tmp.Close()
@@ -112,6 +126,53 @@ func (s *Server) servePut(w http.ResponseWriter, r *http.Request) {
 				Name: plan.fileName,
 				Size: 0,
 			})
+		}
+		if plan.existed {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			w.WriteHeader(http.StatusCreated)
+		}
+		return
+	}
+
+	// WebDAV 文件统一交给上传任务队列，并等待任务真正完成后再向客户端应答。
+	// 等待使用请求 context，但任务使用 Manager 自己的 context；即使客户端断开，
+	// 后台上传也会继续执行。
+	if task, err := s.createUploadTask(plan, tmpPath, info.Size()); err != nil {
+		s.log.Warn("webdav 创建上传任务失败", "file", plan.fileName, "err", err)
+		http.Error(w, "Unable to create upload task", http.StatusInternalServerError)
+		return
+	} else if task != nil {
+		handedOff = true
+		finished, err := s.fs.uploads.Wait(ctx, task.TaskID)
+		if err != nil {
+			// 客户端断开只结束等待，不能影响已接管临时文件的后台任务。
+			if ctx.Err() != nil {
+				s.log.Info("webdav 客户端断开，上传任务继续后台执行",
+					"file", plan.fileName, "task_id", task.TaskID)
+				return
+			}
+			s.log.Warn("webdav 等待上传任务失败",
+				"file", plan.fileName, "task_id", task.TaskID, "err", err)
+			http.Error(w, "Upload task unavailable", http.StatusInternalServerError)
+			return
+		}
+		if finished.Status != upload.StatusSuccess && finished.Status != upload.StatusSkipped {
+			errMsg := finished.Error
+			if errMsg == "" {
+				errMsg = "Upload failed"
+			}
+			s.log.Warn("webdav 上传任务未成功",
+				"file", plan.fileName, "task_id", task.TaskID,
+				"status", finished.Status, "err", finished.Error)
+			http.Error(w, errMsg, http.StatusBadGateway)
+			return
+		}
+
+		item := fileItemFromUploadTask(finished, plan.fileName, info.Size())
+		s.fs.resolver.rememberFile(ctx, plan.accountID, parsed.RelParts, plan.parentID, item)
+		if item.ID != "" {
+			w.Header().Set("ETag", stableFileETag(item))
 		}
 		if plan.existed {
 			w.WriteHeader(http.StatusNoContent)
@@ -183,4 +244,55 @@ func writeUploadErr(w http.ResponseWriter, err error) {
 		return
 	}
 	http.Error(w, "Upload failed", http.StatusConflict)
+}
+
+// createUploadTask 把 WebDAV 已完整接收的临时文件交给任务队列。返回 nil task
+// 表示当前 Server 没有配置上传管理器，调用方应兼容性地退回同步上传。
+func (s *Server) createUploadTask(plan *uploadPlan, tmpPath string, size int64) (*upload.Task, error) {
+	if s.fs == nil || s.fs.uploads == nil {
+		return nil, nil
+	}
+	task, err := s.fs.uploads.CreateServerLocalTask(context.Background(), upload.ServerLocalCreateParams{
+		AccountID:        plan.accountID,
+		AccountName:      plan.accountName,
+		DriverType:       plan.driverType,
+		FileName:         plan.fileName,
+		DisplayName:      plan.fileName,
+		SourceType:       upload.SourceTypeWebDAV,
+		TargetPath:       plan.parentID,
+		LocalPath:        tmpPath,
+		CleanupLocalMode: upload.CleanupLocalFileOnSuccess,
+		CleanupLocalPath: tmpPath,
+		TotalBytes:       size,
+		ConflictPolicy:   "overwrite",
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.log.Info("webdav 文件转入上传队列",
+		"file", plan.fileName, "size", size, "account", plan.accountName,
+		"task_id", task.TaskID)
+	return task, nil
+}
+
+func fileItemFromUploadTask(task *upload.Task, fallbackName string, fallbackSize int64) domain.FileItem {
+	item := domain.FileItem{
+		Name:    fallbackName,
+		Size:    fallbackSize,
+		ModTime: time.Now(),
+	}
+	if task == nil || task.Result == nil {
+		return item
+	}
+	if id, ok := task.Result["file_id"].(string); ok {
+		item.ID = id
+		item.IDKind = domain.IDStable
+	}
+	if name, ok := task.Result["file_name"].(string); ok && name != "" {
+		item.Name = name
+	}
+	if size, ok := task.Result["size"].(int64); ok {
+		item.Size = size
+	}
+	return item
 }

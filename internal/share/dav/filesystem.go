@@ -17,7 +17,9 @@ type FileSystem struct {
 	files        *file.Service
 	dataDir      string
 	tempRegistry *upload.TempRegistry
-	log          *slog.Logger
+	// uploads 为 nil 时退回同步上传（保持原有行为）
+	uploads *upload.Manager
+	log     *slog.Logger
 }
 
 func (fs *FileSystem) Mkdir(ctx context.Context, name string, perm os.FileMode) error {

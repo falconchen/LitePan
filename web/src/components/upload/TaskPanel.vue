@@ -519,7 +519,9 @@ function buildUploadRow(task: UploadTask): PanelRow {
           ? "离线接棒"
           : task.source_type === "server_local"
             ? "服务器上传"
-            : "手动上传",
+            : task.source_type === "webdav"
+              ? "WebDAV 上传"
+              : "手动上传",
     status: uploadStatusLabel(task),
     statusDetail: uploadStatusDetail(task),
     statusClass: displayStatus,

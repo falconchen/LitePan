@@ -501,6 +501,7 @@ func NewRouter(d Deps) http.Handler {
 		Settings:     d.Settings,
 		DataDir:      d.DataDir,
 		TempRegistry: d.Uploads.TempRegistry(),
+		Uploads:      d.Uploads,
 	})
 
 	sub, err := fs.Sub(webFS, "web")

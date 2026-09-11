@@ -882,6 +882,60 @@ func TestOfflineHandoffUploadSuccessRemovesSourceDirectory(t *testing.T) {
 	t.Fatal("离线交棒上传任务未完成")
 }
 
+func TestWaitCancellationDoesNotCancelUploadTask(t *testing.T) {
+	drv := &queuedUploadDriver{
+		started:  make(chan string, 1),
+		releases: map[string]chan struct{}{"movie.mkv": make(chan struct{})},
+	}
+	m := NewManager(Options{
+		Exec:     driverexec.New(fakeProvider{drv: drv}, nil),
+		Accounts: fakeUploadAccounts{},
+		DataDir:  t.TempDir(),
+	})
+	sourceFile := filepath.Join(t.TempDir(), "movie.mkv")
+	if err := os.WriteFile(sourceFile, []byte("1234"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task, err := m.CreateServerLocalTask(context.Background(), ServerLocalCreateParams{
+		AccountID:        1,
+		AccountName:      "测试账号",
+		DriverType:       "mock",
+		FileName:         "movie.mkv",
+		SourceType:       SourceTypeWebDAV,
+		TargetPath:       "0",
+		LocalPath:        sourceFile,
+		CleanupLocalMode: CleanupLocalFileOnSuccess,
+		TotalBytes:       4,
+		ConflictPolicy:   "overwrite",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-drv.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("上传任务未启动")
+	}
+
+	waitCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := m.Wait(waitCtx, task.TaskID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait error = %v，期望 context.Canceled", err)
+	}
+	if current, ok := m.Get(context.Background(), task.TaskID); !ok || current.Status != StatusRunning {
+		t.Fatalf("取消等待不应取消任务: task=%+v ok=%v", current, ok)
+	}
+
+	close(drv.releases["movie.mkv"])
+	finished, err := m.Wait(context.Background(), task.TaskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finished.Status != StatusSuccess {
+		t.Fatalf("status = %q，期望 %q", finished.Status, StatusSuccess)
+	}
+}
+
 func waitUploadStatus(t *testing.T, m *Manager, taskID string, statuses ...string) *Task {
 	t.Helper()
 	wanted := make(map[string]struct{}, len(statuses))
@@ -1330,6 +1384,35 @@ func TestDownloadContentRangeHelpers(t *testing.T) {
 	}
 	if size, ok := unsatisfiedDownloadRangeSize("bytes */6"); !ok || size != 6 {
 		t.Fatalf("size=%d ok=%v", size, ok)
+	}
+}
+
+func TestDeleteFailedWebDAVTaskRemovesTemporaryFile(t *testing.T) {
+	m := NewManager(Options{DataDir: t.TempDir()})
+	temporaryFile := filepath.Join(t.TempDir(), "webdav.bin")
+	if err := os.WriteFile(temporaryFile, []byte("data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m.mu.Lock()
+	st := m.newTaskStateLocked(CreateParams{
+		AccountID:        1,
+		FileName:         "webdav.bin",
+		SourceType:       SourceTypeWebDAV,
+		LocalPath:        temporaryFile,
+		CleanupLocalMode: CleanupLocalFileOnSuccess,
+	})
+	st.Status = StatusFailed
+	close(st.runDone)
+	m.addTaskLocked(st)
+	m.mu.Unlock()
+
+	found, err := m.Delete(context.Background(), st.TaskID, false)
+	if !found || err != nil {
+		t.Fatalf("delete found=%v err=%v", found, err)
+	}
+	if _, err := os.Stat(temporaryFile); !os.IsNotExist(err) {
+		t.Fatalf("删除 WebDAV 失败任务后临时文件仍存在: %v", err)
 	}
 }
 

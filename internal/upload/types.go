@@ -64,6 +64,8 @@ const (
 	SourceTypeOfflineHandoff = "offline_handoff"
 	// 服务器本地上传，删除任务时保留用户源文件。
 	SourceTypeServerLocal = "server_local"
+	// WebDAV 上传，源文件是 LitePan 接收的临时文件，可随任务清理。
+	SourceTypeWebDAV = "webdav"
 )
 
 const (
