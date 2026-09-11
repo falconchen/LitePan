@@ -40,6 +40,7 @@ type Deps struct {
 	Settings     *settings.Service
 	DataDir      string
 	TempRegistry *upload.TempRegistry
+	Uploads      *upload.Manager
 }
 
 type Server struct {
@@ -74,6 +75,7 @@ func New(d Deps) *Server {
 		files:        d.Files,
 		dataDir:      tmpDir,
 		tempRegistry: d.TempRegistry,
+		uploads:      d.Uploads,
 		log:          log,
 	}
 	h := &webdav.Handler{

@@ -10,14 +10,17 @@ import (
 
 	"litepan/internal/domain"
 	"litepan/internal/driver"
+	"litepan/internal/upload"
 )
 
 type uploadPlan struct {
-	accountID int64
-	parentID  string
-	fileName  string
-	existed   bool
-	noop      bool
+	accountID   int64
+	accountName string
+	driverType  string
+	parentID    string
+	fileName    string
+	existed     bool
+	noop        bool
 }
 
 func (fs *FileSystem) planUpload(ctx context.Context, webPath string, exclusive bool) (*uploadPlan, error) {
@@ -56,10 +59,12 @@ func (fs *FileSystem) planUpload(ctx context.Context, webPath string, exclusive 
 		}
 	}
 	return &uploadPlan{
-		accountID: acc.ID,
-		parentID:  parentID,
-		fileName:  fileName,
-		existed:   existed,
+		accountID:   acc.ID,
+		accountName: acc.Name,
+		driverType:  acc.DriverType,
+		parentID:    parentID,
+		fileName:    fileName,
+		existed:     existed,
 	}, nil
 }
 
@@ -80,13 +85,22 @@ func (s *Server) servePut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tmp, tmpPath, release, err := createWebDAVTempFile(s.fs.dataDir, plan.fileName, s.fs.tempRegistry)
+	tmp, tmpPath, untrack, release, err := createWebDAVTempFile(s.fs.dataDir, plan.fileName, s.fs.tempRegistry)
 	if err != nil {
 		s.log.Warn("webdav put temp file", "path", webPath, "err", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	defer release()
+	// 临时文件若被上传任务接管，删除时机就归任务管（上传成功后按
+	// CleanupLocalFileOnSuccess 处理），这里只能取消登记不能删。
+	handedOff := false
+	defer func() {
+		if handedOff {
+			untrack()
+			return
+		}
+		release()
+	}()
 
 	if _, err := io.Copy(tmp, r.Body); err != nil {
 		_ = tmp.Close()
@@ -113,6 +127,24 @@ func (s *Server) servePut(w http.ResponseWriter, r *http.Request) {
 				Size: 0,
 			})
 		}
+		if plan.existed {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			w.WriteHeader(http.StatusCreated)
+		}
+		return
+	}
+
+	// 大文件转交上传任务队列，立刻应答，避免客户端等不住而取消请求。
+	if s.enqueueUpload(plan, tmpPath, info.Size()) {
+		handedOff = true
+		// 让客户端随后的 PROPFIND 能看到这个文件；此刻它还在队列里，
+		// 上传失败的话缓存会在下次刷新时被纠正。
+		s.fs.resolver.rememberFile(ctx, plan.accountID, parsed.RelParts, plan.parentID, domain.FileItem{
+			Name:    plan.fileName,
+			Size:    info.Size(),
+			ModTime: time.Now(),
+		})
 		if plan.existed {
 			w.WriteHeader(http.StatusNoContent)
 		} else {
@@ -183,4 +215,51 @@ func writeUploadErr(w http.ResponseWriter, err error) {
 		return
 	}
 	http.Error(w, "Upload failed", http.StatusConflict)
+}
+
+// asyncUploadThreshold 决定 WebDAV 上传走同步还是任务队列。
+//
+// WebDAV 的 PUT 语义是"返回 201 即表示已存好"，所以默认必须同步——客户端要
+// 依据响应判断成败。但同步意味着整个 PUT 请求要挂到网盘上传结束为止：慢上行
+// 链路下一个几百 MB 的文件要传好几分钟，客户端（或中间的反代）往往先超时
+// 断开，请求 context 随之取消，连带把正在进行的网盘上传也掐断，白传。
+//
+// 超过该阈值的文件因此改为交给上传任务队列：立刻应答，上传在后台进行，可在
+// 管理页看到进度，并获得重试与断点续传。代价是这时的 201 只表示"已接收并
+// 排队"，真正失败客户端不会知道——所以阈值取得较大，只让那些同步几乎必然被
+// 客户端超时掐断的大文件走这条路。
+const asyncUploadThreshold = 64 << 20 // 64 MiB
+
+// enqueueUpload 尝试把这次上传交给任务队列。返回 true 表示已接管，调用方应当
+// 直接应答成功，并且不要删除临时文件。
+//
+// 任何一步不满足都返回 false 退回同步上传：同步总能给出确定的结果，比让
+// 客户端收到一个失败的 PUT 要好。
+func (s *Server) enqueueUpload(plan *uploadPlan, tmpPath string, size int64) bool {
+	if s.fs == nil || s.fs.uploads == nil || size <= asyncUploadThreshold {
+		return false
+	}
+	// 这里刻意用 context.Background() 而不是请求的 ctx：后者在客户端断开时
+	// 会被取消，而建任务这一步不该受此影响。任务本身由 Manager 用自己的根
+	// context 执行，同样不受请求生命周期约束。
+	if _, err := s.fs.uploads.CreateServerLocalTask(context.Background(), upload.ServerLocalCreateParams{
+		AccountID:        plan.accountID,
+		AccountName:      plan.accountName,
+		DriverType:       plan.driverType,
+		FileName:         plan.fileName,
+		DisplayName:      plan.fileName,
+		TargetPath:       plan.parentID,
+		LocalPath:        tmpPath,
+		CleanupLocalMode: upload.CleanupLocalFileOnSuccess,
+		CleanupLocalPath: tmpPath,
+		TotalBytes:       size,
+		ConflictPolicy:   "overwrite",
+	}); err != nil {
+		s.log.Warn("webdav 转上传任务失败，退回同步上传",
+			"file", plan.fileName, "err", err)
+		return false
+	}
+	s.log.Info("webdav 大文件转入上传队列",
+		"file", plan.fileName, "size", size, "account", plan.accountName)
+	return true
 }
