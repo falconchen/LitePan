@@ -30,7 +30,7 @@ func TestRangeRequestsShareAccountConcurrencyLimit(t *testing.T) {
 	results := make(chan rangeResult, 3)
 	for range 3 {
 		go func() {
-			resp, err := svc.doRangeRequest(context.Background(), 42, link, 0, 0, false)
+			resp, err := svc.doRangeRequest(context.Background(), 42, link, 0, 0, false, false)
 			results <- rangeResult{resp: resp, err: err}
 		}()
 	}

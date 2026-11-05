@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 defineProps<{
   name: string;
 }>();
 </script>
 
 <template>
-  <i :class="['fas', `fa-${name}`, 'admin-nav-icon']" aria-hidden="true"></i>
+  <span class="admin-nav-icon"><SvgIcon :name="name" :size="18" /></span>
 </template>
 
 <style scoped>

@@ -25,6 +25,16 @@ import (
 	"time"
 )
 
+// ossUploadHTTPClient 返回用于 OSS 数据传输的客户端：它不设总超时，因为传输时长
+// 取决于文件大小和链路速度。所有直接面向 OSS 的请求都必须走它，尤其是
+// ossSinglePartUpload 和 ossUploadPart 这两条真正搬数据的路径。
+func (d *Driver) ossUploadHTTPClient() *http.Client {
+	if d.uploadClient != nil {
+		return d.uploadClient
+	}
+	return d.client
+}
+
 type uploadInitData struct {
 	PickCode    flexString      `json:"pick_code"`
 	Status      flexNumber      `json:"status"`
@@ -984,16 +994,6 @@ func isOSSUploadMissing(err error) bool {
 		strings.Contains(message, "uploadid") && strings.Contains(message, "not exist")
 }
 
-// transferClient 返回用于 OSS 数据传输的客户端：它不设总超时，因为传输时长
-// 取决于文件大小和链路速度。所有直接面向 OSS 的请求都必须走它，尤其是
-// ossSinglePartUpload 和 ossUploadPart 这两条真正搬数据的路径。
-func (d *Driver) transferClient() *http.Client {
-	if d.uploadClient != nil {
-		return d.uploadClient
-	}
-	return d.client
-}
-
 func (d *Driver) ossDo(ctx context.Context, method, rawURL string, headers http.Header, body io.Reader) (*http.Response, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
 	if err != nil {
@@ -1005,7 +1005,7 @@ func (d *Driver) ossDo(ctx context.Context, method, rawURL string, headers http.
 		}
 	}
 	req.Header.Set("User-Agent", ossUserAgent)
-	resp, data, err := httpx.Execute(d.transferClient(), req, httpx.DefaultReadLimit)
+	resp, data, err := httpx.Execute(d.ossUploadHTTPClient(), req, httpx.DefaultReadLimit)
 	if err != nil {
 		return nil, nil, domain.Wrap(domain.CodeDriverError, err)
 	}
@@ -1042,7 +1042,7 @@ func (d *Driver) ossSinglePartUpload(ctx context.Context, localPath string, file
 	}
 	req.Header.Set("User-Agent", ossUserAgent)
 	req.ContentLength = fileSize
-	resp, err := d.transferClient().Do(req)
+	resp, err := d.ossUploadHTTPClient().Do(req)
 	if err != nil {
 		return nil, domain.Wrap(domain.CodeDriverError, err)
 	}
@@ -1156,7 +1156,7 @@ func (d *Driver) ossUploadPart(ctx context.Context, token ossTokenData, bucket, 
 	}
 	req.Header.Set("User-Agent", ossUserAgent)
 	req.ContentLength = partSize
-	resp, err := d.transferClient().Do(req)
+	resp, err := d.ossUploadHTTPClient().Do(req)
 	if err != nil {
 		return "", domain.Wrap(domain.CodeDriverError, err)
 	}

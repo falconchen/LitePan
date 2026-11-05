@@ -48,9 +48,12 @@ func (p *Planner) detectSameWorkDirConflicts() {
 				if fa.SourceParentID != losingDirID {
 					continue
 				}
-				fa.TargetParentID = winningDirID
-				if !contains(fa.DependsOn, winning.ID) {
-					fa.DependsOn = append(fa.DependsOn, winning.ID)
+				// 合并作品时保留原目标中的季目录层级。
+				if !p.reparentMergedTargetRef(fa.TargetParentID, losingDirID, winningDirID, winning.ID) {
+					fa.TargetParentID = winningDirID
+					if !contains(fa.DependsOn, winning.ID) {
+						fa.DependsOn = append(fa.DependsOn, winning.ID)
+					}
 				}
 				fa.Reason += fmt.Sprintf("（从「%s」合并到「%s」）", losing.SourceName, winning.TargetName)
 			}
@@ -122,6 +125,41 @@ func (p *Planner) detectSameWorkDirConflicts() {
 			})
 		}
 	}
+}
+
+// reparentMergedTargetRef 保留子目录层级，将引用链改挂到胜出作品目录。
+func (p *Planner) reparentMergedTargetRef(targetRef, losingDirID, winningDirID, winningActionID string) bool {
+	if !strings.HasPrefix(targetRef, "ref:") {
+		return false
+	}
+	actionID := strings.TrimPrefix(targetRef, "ref:")
+	for depth := 0; actionID != "" && depth <= 50; depth++ {
+		var target *moplan.PlanAction
+		for i := range p.actions {
+			if p.actions[i].ID == actionID {
+				target = &p.actions[i]
+				break
+			}
+		}
+		if target == nil || (target.Kind != moplan.ActionKindEnsureDir && target.Kind != moplan.ActionKindMoveAndRenameDir) {
+			return false
+		}
+		switch target.TargetParentID {
+		case losingDirID:
+			target.TargetParentID = winningDirID
+			if !contains(target.DependsOn, winningActionID) {
+				target.DependsOn = append(target.DependsOn, winningActionID)
+			}
+			return true
+		case winningDirID:
+			return true
+		}
+		if !strings.HasPrefix(target.TargetParentID, "ref:") {
+			return false
+		}
+		actionID = strings.TrimPrefix(target.TargetParentID, "ref:")
+	}
+	return false
 }
 
 // sortMergeCandidates 依次按目标名、文件数、名称和 ID 选出稳定的合并胜出者。
@@ -410,6 +448,18 @@ func (p *Planner) planEmptyDirCleanup() {
 
 	starts := map[string]struct{}{}
 	stopAt := map[string]string{}
+	// 本轮新建的作品文件夹：relocate 的目标父目录是这些新文件夹时，
+	// 源目录只是多了一层子文件夹，并没有被搬空，不能排进待清理链。
+	newDirParent := map[string]string{}
+	for _, action := range p.actions {
+		if action.Kind != moplan.ActionKindEnsureDir && action.Kind != moplan.ActionKindMoveAndRenameDir {
+			continue
+		}
+		if action.Status == "skipped" {
+			continue
+		}
+		newDirParent[action.ID] = action.TargetParentID
+	}
 	for _, action := range p.actions {
 		switch action.Kind {
 		case moplan.ActionKindRelocate:
@@ -419,6 +469,11 @@ func (p *Planner) planEmptyDirCleanup() {
 			}
 			if action.TargetParentID == sp {
 				continue
+			}
+			if strings.HasPrefix(action.TargetParentID, "ref:") {
+				if newDirParent[action.TargetParentID[4:]] == sp {
+					continue
+				}
 			}
 			if _, ok := dirRelocateSources[sp]; ok {
 				continue

@@ -40,7 +40,7 @@ func (s *Service) runRule(id int64, triggerSource string) {
 
 	rule, err := s.rules.Get(ctx, id)
 	if err != nil {
-		s.log.Warn("automation get rule failed", "rule_id", id, "err", err)
+		s.log.Warn("读取自动化规则失败", "rule_id", id, "err", err)
 		return
 	}
 	actions := decodeActions(rule.Actions)
@@ -53,7 +53,7 @@ func (s *Service) runRule(id int64, triggerSource string) {
 	}
 	runID, err := s.runs.Create(ctx, run)
 	if err != nil {
-		s.log.Warn("automation create run failed", "rule_id", id, "err", err)
+		s.log.Warn("创建自动化运行记录失败", "rule_id", id, "err", err)
 		return
 	}
 	run.ID = runID
@@ -74,12 +74,7 @@ func (s *Service) runRule(id int64, triggerSource string) {
 		}
 		if shouldRunAction(action.Condition, previousSuccess, i) {
 			s.setRunningStep(id, i, actionDisplayName(action), action.Type)
-			runAction := action
-			if action.Type == domain.AutomationActionCacheClear {
-				runAction.Params = cloneMap(action.Params)
-				runAction.Params["_following_actions"] = actions[i+1:]
-			}
-			result := s.executeAction(ctx, runAction)
+			result := s.executeAction(ctx, action, actions[i+1:])
 			for k, v := range result {
 				step[k] = v
 			}
@@ -114,10 +109,10 @@ func (s *Service) runRule(id int64, triggerSource string) {
 	_ = s.rules.Update(ctx, rule)
 }
 
-func (s *Service) executeAction(ctx context.Context, action RuleAction) map[string]any {
+func (s *Service) executeAction(ctx context.Context, action RuleAction, following []RuleAction) map[string]any {
 	switch action.Type {
 	case domain.AutomationActionCacheClear:
-		return s.runCacheClear(ctx, action.Params)
+		return s.runCacheClear(ctx, following)
 	case domain.AutomationActionDelay:
 		return s.runDelay(ctx, action.Params)
 	case domain.AutomationActionOrganize:
@@ -130,16 +125,20 @@ func (s *Service) executeAction(ctx context.Context, action RuleAction) map[stri
 		return s.runEmbyRefresh(ctx, action.Params)
 	case domain.AutomationActionEmbyCompleteMediaInfo:
 		return s.runEmbyCompleteMediaInfo(ctx, action.Params)
+	case domain.AutomationActionFnosScan:
+		return s.runFnosLibraryAction(ctx, action.Params, false)
+	case domain.AutomationActionFnosRefreshMetadata:
+		return s.runFnosLibraryAction(ctx, action.Params, true)
 	default:
 		return map[string]any{"status": "failed", "success": false, "message": "动作类型不支持"}
 	}
 }
 
-func (s *Service) runCacheClear(ctx context.Context, params map[string]any) map[string]any {
+func (s *Service) runCacheClear(ctx context.Context, following []RuleAction) map[string]any {
 	if s.files == nil {
 		return map[string]any{"status": "failed", "success": false, "message": "文件服务未就绪"}
 	}
-	accountIDs := s.collectCacheClearAccountIDs(ctx, params["_following_actions"])
+	accountIDs := s.collectCacheClearAccountIDs(ctx, following)
 	if len(accountIDs) == 0 {
 		return map[string]any{"status": "failed", "success": false, "message": "刷新目录后面需要有整理任务或 STRM 任务"}
 	}
@@ -154,11 +153,7 @@ func (s *Service) runCacheClear(ctx context.Context, params map[string]any) map[
 	}
 }
 
-func (s *Service) collectCacheClearAccountIDs(ctx context.Context, raw any) []int64 {
-	actions, ok := raw.([]RuleAction)
-	if !ok {
-		return nil
-	}
+func (s *Service) collectCacheClearAccountIDs(ctx context.Context, actions []RuleAction) []int64 {
 	accountIDs := make([]int64, 0)
 	seen := make(map[int64]struct{})
 	addAccount := func(accountID int64) {
@@ -283,7 +278,7 @@ func evaluateOrganizeAction(summary, params map[string]any, runCompleted bool) o
 	failed := max(0, anyInt(summary["failed"]))
 	skipped := max(0, anyInt(summary["skipped"]))
 	normalSkipped := max(0, anyInt(summary["normal_skipped"]))
-	abnormalSkipped := skipped
+	abnormalSkipped := max(0, skipped-normalSkipped)
 	if summary["abnormal_skipped"] != nil {
 		abnormalSkipped = max(0, anyInt(summary["abnormal_skipped"]))
 	}
@@ -308,6 +303,9 @@ func evaluateOrganizeAction(summary, params map[string]any, runCompleted bool) o
 		message = fmt.Sprintf("整理存在失败项：%d 个", failed)
 	case risk > float64(maxRisk):
 		message = fmt.Sprintf("整理异常比例 %s%% 超过允许值 %d%%", strconv.FormatFloat(risk, 'f', -1, 64), maxRisk)
+	}
+	if abnormalSkipped > 0 {
+		message += fmt.Sprintf("（需关注 %d 项 / 需处理 %d 项，详情见整理日志）", abnormalSkipped, riskTotal)
 	}
 	return organizeActionOutcome{
 		success:         success,
@@ -456,7 +454,7 @@ func strmScrapeOutcome(progress strmscrape.Progress, policy string) (string, boo
 
 func (s *Service) runEmbyRefresh(ctx context.Context, params map[string]any) map[string]any {
 	if s.emby == nil {
-		return map[string]any{"status": "failed", "success": false, "message": "Emby 服务未就绪"}
+		return map[string]any{"status": "failed", "success": false, "message": "Emby/Jellyfin 服务未就绪"}
 	}
 	req := embyproxy.RefreshRequest{
 		ConfigID:  strings.TrimSpace(anyString(params["emby_id"])),
@@ -467,9 +465,9 @@ func (s *Service) runEmbyRefresh(ctx context.Context, params map[string]any) map
 	if err != nil {
 		return map[string]any{"status": "failed", "success": false, "message": err.Error()}
 	}
-	message := "已通知 Emby 刷库"
+	message := "已通知 Emby/Jellyfin 扫描全部媒体库"
 	if result.Mode == "library" && result.LibraryName != "" {
-		message = "已通知 Emby 扫描媒体库：" + result.LibraryName
+		message = "已通知 Emby/Jellyfin 扫描媒体库：" + result.LibraryName
 	}
 	return map[string]any{
 		"status":  "success",
@@ -488,7 +486,7 @@ func (s *Service) runEmbyRefresh(ctx context.Context, params map[string]any) map
 
 func (s *Service) runEmbyCompleteMediaInfo(ctx context.Context, params map[string]any) map[string]any {
 	if s.emby == nil {
-		return map[string]any{"status": "failed", "success": false, "message": "Emby 服务未就绪"}
+		return map[string]any{"status": "failed", "success": false, "message": "Emby/Jellyfin 服务未就绪"}
 	}
 	result, err := s.emby.CompleteMediaInfo(ctx, embyproxy.CompleteMediaInfoRequest{
 		ConfigID:  strings.TrimSpace(anyString(params["emby_id"])),
@@ -506,7 +504,7 @@ func (s *Service) runEmbyCompleteMediaInfo(ctx context.Context, params map[strin
 		status = "partial"
 		message = fmt.Sprintf("已检查 %d 个条目，补全 %d 个，仍缺失 %d 个，等待超时 %d 个，失败 %d 个", result.Scanned, result.Completed, result.Unchanged, result.TimedOut, result.Failed)
 		if result.TimedOut > 0 {
-			message += "；超时条目可能仍在 Emby 后台处理"
+			message += "；超时条目可能仍在 Emby/Jellyfin 后台处理"
 		}
 		if len(result.FailedItems) > 0 {
 			names := result.FailedItems
@@ -523,6 +521,33 @@ func (s *Service) runEmbyCompleteMediaInfo(ctx context.Context, params map[strin
 		}
 	}
 	return map[string]any{"status": status, "success": success, "message": message, "data": result}
+}
+
+func (s *Service) runFnosLibraryAction(ctx context.Context, params map[string]any, refreshMetadata bool) map[string]any {
+	if s.fnos == nil {
+		return map[string]any{"status": "failed", "success": false, "message": "飞牛影视服务未就绪"}
+	}
+	libraryID := strings.TrimSpace(anyString(params["library_id"]))
+	libraryName := strings.TrimSpace(anyString(params["library_name"]))
+	var err error
+	message := "已通知飞牛影视扫描媒体库"
+	if refreshMetadata {
+		refreshMode := anyInt(params["refresh_mode"])
+		err = s.fnos.RefreshMetadata(ctx, libraryID, refreshMode)
+		message = "已通知飞牛影视刷新元数据（仅补充缺失项）"
+		if refreshMode == 0 {
+			message = "已通知飞牛影视刷新元数据（替换全部）"
+		}
+	} else {
+		err = s.fnos.ScanLibrary(ctx, libraryID)
+	}
+	if err != nil {
+		return map[string]any{"status": "failed", "success": false, "message": err.Error()}
+	}
+	if libraryName != "" {
+		message += "：" + libraryName
+	}
+	return map[string]any{"status": "success", "success": true, "message": message, "data": map[string]any{"library_id": libraryID, "library_name": libraryName}}
 }
 
 type submitRunResult struct {
@@ -651,9 +676,13 @@ func actionDisplayName(action RuleAction) string {
 	case domain.AutomationActionCacheClear:
 		return "刷新目录"
 	case domain.AutomationActionEmbyRefresh:
-		return "Emby 刷库"
+		return "Emby/JF 扫库"
 	case domain.AutomationActionEmbyCompleteMediaInfo:
-		return "Emby 补全媒体信息"
+		return "Emby/JF 补媒体信息"
+	case domain.AutomationActionFnosScan:
+		return "飞牛影视扫库"
+	case domain.AutomationActionFnosRefreshMetadata:
+		return "飞牛影视刷新元数据"
 	default:
 		return action.Type
 	}

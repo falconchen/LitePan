@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { containsQuery } from "@/utils/format";
 import { computed, onMounted, reactive, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
 import {
@@ -8,7 +9,7 @@ import {
 } from "@/api/cloudTools";
 import { toast } from "@/composables/useToast";
 import AppButton from "@/components/base/AppButton.vue";
-import CloudToolCard from "@/components/admin/CloudToolCard.vue";
+import ToolCard from "@/components/admin/ToolCard.vue";
 import ProxyWorkspace, { type ProxyField, type ProxyWorkspaceItem } from "@/components/admin/ProxyWorkspace.vue";
 
 const props = withDefaults(defineProps<{ searchQuery?: string }>(), { searchQuery: "" });
@@ -27,7 +28,7 @@ const aiDraft = reactive<Record<string, string>>({
 });
 
 const defaultInstance = computed(() => aiConfig.value.items.find((item) => item.default) || null);
-const activeModel = computed(() => defaultInstance.value?.model || "");
+const activeConfigName = computed(() => defaultInstance.value?.name || "");
 const selectedInstance = computed(() =>
   aiConfig.value.items.find((item) => item.id === aiSelectedID.value) || null,
 );
@@ -74,8 +75,7 @@ const workspaceFields: ProxyField[] = [
 ];
 
 function matches(title: string) {
-  const q = props.searchQuery.trim().toLowerCase();
-  return !q || title.toLowerCase().includes(q);
+  return containsQuery(title, props.searchQuery);
 }
 
 function configComplete(values: Record<string, string>) {
@@ -252,13 +252,13 @@ function configCompleteFromInstances(items: AIOrganizeInstanceUpdate[]) {
 
 <template>
   <div v-show="matches('AI 辅助识别')">
-    <CloudToolCard
+    <ToolCard
       :enabled="aiConfig.enabled"
       name="AI 辅助识别"
       driver="目录整理 · 低置信作品补判"
       logo-src="/logos/AI.png"
       logo-alt="AI"
-      :stat-value="activeModel || '待配置'"
+      :stat-value="activeConfigName || '待配置'"
       :compact-stat="true"
     >
       <template #toggle>
@@ -289,14 +289,14 @@ function configCompleteFromInstances(items: AIOrganizeInstanceUpdate[]) {
           模型设置
         </AppButton>
       </template>
-    </CloudToolCard>
+    </ToolCard>
 
     <ProxyWorkspace
       v-model="aiDraft"
       :open="aiOpen"
       title="AI 辅助识别 · 模型设置"
-      caption="AI 模型配置"
-      icon="🤖"
+      caption=""
+      icon="robot"
       :subtitle="selectedInstance ? (selectedInstance.default ? '默认激活 · 运行时使用' : '备用配置') : ''"
       :items="workspaceItems"
       :selected-id="aiSelectedID"
@@ -319,43 +319,4 @@ function configCompleteFromInstances(items: AIOrganizeInstanceUpdate[]) {
 </template>
 
 <style scoped>
-.check-toggle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 0;
-  padding: 0;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  background: var(--border);
-  color: var(--text-muted);
-  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.check-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
-.check-toggle:hover {
-  background: var(--surface-hover);
-}
-
-.check-toggle.on {
-  background: var(--success);
-  color: #fff;
-  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.16);
-}
-
-.check-toggle.on:hover {
-  background: color-mix(in srgb, var(--success) 88%, #000);
-}
-
-.check-toggle:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 </style>

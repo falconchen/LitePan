@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"litepan/internal/domain"
 	"litepan/internal/driver"
@@ -39,7 +41,7 @@ func (s *Service) refreshUnlocked(ctx context.Context, accountID int64, caller d
 	drv, err := s.drivers.Get(ctx, accountID)
 	if err != nil {
 		outcome := driver.ClassifyOAuthRefreshError(err)
-		s.recordRefreshFailure(ctx, accountID, st, outcome, caller, err)
+		s.recordRefreshFailure(ctx, accountID, outcome, caller, err)
 		return outcome, err
 	}
 	refresher, ok := drv.(driver.AuthRefresher)
@@ -52,7 +54,7 @@ func (s *Service) refreshUnlocked(ctx context.Context, accountID int64, caller d
 			return driver.RefreshSuccess, nil
 		}
 		err := domain.Errorf(domain.CodeAuthExpired, "该账号不支持自动续期，请更新认证信息")
-		s.recordRefreshFailure(ctx, accountID, st, driver.RefreshFatal, caller, err)
+		s.recordRefreshFailure(ctx, accountID, driver.RefreshFatal, caller, err)
 		return driver.RefreshFatal, err
 	}
 	// 初始化已换取凭据，不紧接着再刷新一遍。
@@ -64,19 +66,10 @@ func (s *Service) refreshUnlocked(ctx context.Context, accountID int64, caller d
 	}
 
 	outcome, rerr := refresher.RefreshAuth(ctx, caller)
-	if outcome == driver.RefreshSuccess && rerr == nil {
-		if err := s.finishRefresh(ctx, accountID, drv); err != nil {
-			return driver.RefreshRetryable, err
-		}
-		if caller == driver.CallerPassive {
-			s.log.Info("账号被动认证刷新成功", "account_id", accountID)
-		}
-		return outcome, nil
+	outcome, rerr = s.completeRefresh(ctx, accountID, drv, caller, outcome, rerr)
+	if rerr == nil && caller == driver.CallerPassive {
+		s.log.Info("账号被动认证刷新成功", "account_id", accountID)
 	}
-	if rerr == nil {
-		rerr = domain.Errf(domain.CodeAuthExpired)
-	}
-	s.recordRefreshFailure(ctx, accountID, st, outcome, caller, rerr)
 	return outcome, rerr
 }
 
@@ -96,8 +89,10 @@ func (s *Service) onCredentialsPersisted(ctx context.Context, accountID int64) {
 		return
 	}
 	s.applyAccountSchedule(ctx, accountID, st)
-	name := s.accountName(ctx, accountID)
-	s.log.Info("请求链路触发认证凭证回写", "account_id", accountID, "account", name)
+	name, driverType := s.accountLabel(ctx, accountID)
+	nextCheck := formatSchedTime(s.calcNextCheck(ctx, accountID, time.Now(), false))
+	s.log.Info(fmt.Sprintf("账号 %s 请求链路自动续期成功，下次检查 %s", scheduleLabel(name, driverType), nextCheck),
+		"account_id", accountID, "account", name, "driver", driverType, "next_check", nextCheck)
 	_ = s.markSuccess(ctx, accountID, st, true)
 }
 

@@ -62,13 +62,31 @@ func (s *Service) managedIDs() []int64 {
 	return out
 }
 
-func (s *Service) accountName(ctx context.Context, accountID int64) string {
+// scheduleLabel 拼出"账号名（驱动）"形式的日志标签。
+func scheduleLabel(name, driverType string) string {
+	if driverType == "" {
+		return name
+	}
+	return fmt.Sprintf("%s（%s）", name, driverType)
+}
+
+// callerName 把刷新来源渲染成可读文本。
+func callerName(c driver.RefreshCaller) string {
+	if c == driver.CallerActive {
+		return "主动"
+	}
+	return "被动"
+}
+
+// accountLabel 返回账号名与驱动类型，供日志标注"刷新的是哪个驱动的认证"。
+func (s *Service) accountLabel(ctx context.Context, accountID int64) (string, string) {
+	fallback := fmt.Sprintf("账号%d", accountID)
 	if s.accounts == nil {
-		return fmt.Sprintf("账号%d", accountID)
+		return fallback, ""
 	}
 	acc, err := s.accounts.Get(ctx, accountID)
 	if err != nil || acc == nil {
-		return fmt.Sprintf("账号%d", accountID)
+		return fallback, ""
 	}
-	return acc.Name
+	return acc.Name, acc.DriverType
 }

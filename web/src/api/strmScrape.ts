@@ -57,6 +57,10 @@ export interface StrmScrapeRematchResult {
 
 export interface StrmScrapeSettings {
   write_mode: StrmScrapeWriteMode;
+  episode_info: boolean;
+  fanart: boolean;
+  actors: boolean;
+  clearlogo: boolean;
   tmdb_api_key: string;
   tmdb_language: string;
   tmdb_api_host: string;

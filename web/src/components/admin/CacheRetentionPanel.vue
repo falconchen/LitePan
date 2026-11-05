@@ -7,6 +7,7 @@ import {
   onUnmounted,
   reactive,
   ref,
+  watch,
   watchEffect,
 } from "vue";
 import { storeToRefs } from "pinia";
@@ -28,13 +29,10 @@ import {
 } from "@/api/cacheRetention";
 import FormField from "@/components/base/FormField.vue";
 import AppButton from "@/components/base/AppButton.vue";
-import AppIconButton from "@/components/base/AppIconButton.vue";
 import AppInput from "@/components/base/AppInput.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
-import StatCard from "@/components/base/StatCard.vue";
 import TimeWindowField from "@/components/base/TimeWindowField.vue";
-import AdminStatsGrid from "@/components/admin/AdminStatsGrid.vue";
 import AccountFolderField from "@/components/admin/AccountFolderField.vue";
 import AdminEmptyState from "@/components/admin/AdminEmptyState.vue";
 import AdminEnableToggle from "@/components/admin/AdminEnableToggle.vue";
@@ -65,12 +63,10 @@ import "@/styles/admin-table.css";
 
 const MAX_CONFIGS = 6;
 
-withDefaults(
-  defineProps<{
-    hideStats?: boolean;
-  }>(),
-  { hideStats: false },
-);
+// 任务计数上报给页面顶部的仪表带（缓存页用仪表带替代了原来的三张统计卡）。
+const emit = defineEmits<{
+  stats: [{ total: number; enabled: number; error: number }];
+}>();
 
 const accountsStore = useAccountsStore();
 const { accounts } = storeToRefs(accountsStore);
@@ -90,7 +86,15 @@ const pendingIds = ref<number[]>([]);
 
 const statsTotal = computed(() => tasks.value.length);
 const statsRunning = computed(() => tasks.value.filter((t) => t.status === "running").length);
-const statsPaused = computed(() => tasks.value.filter((t) => t.status !== "running").length);
+const statsError = computed(() => tasks.value.filter((t) => t.last_refresh_status === "error").length);
+
+watch(
+  [statsTotal, statsRunning, statsError],
+  () => {
+    emit("stats", { total: statsTotal.value, enabled: statsRunning.value, error: statsError.value });
+  },
+  { immediate: true },
+);
 
 const activeAccounts = computed(() => accounts.value.filter((a) => a.is_active));
 
@@ -144,7 +148,7 @@ function isRetentionBusy() {
 
 const listPolling = useConditionalPolling({
   intervalMs: 2500,
-  onTick: () => refreshAll(true),
+  onTick: () => refreshTaskState(true),
   shouldPoll: isRetentionBusy,
 });
 
@@ -338,7 +342,11 @@ async function loadStats() {
 }
 
 async function refreshAll(silent = false) {
-  await Promise.all([loadTasks(silent), loadStats(), accountsStore.loadAccounts()]);
+  await Promise.all([refreshTaskState(silent), accountsStore.loadAccounts()]);
+}
+
+async function refreshTaskState(silent = false) {
+  await Promise.all([loadTasks(silent), loadStats()]);
 }
 
 function syncPolling() {
@@ -534,27 +542,9 @@ defineExpose({
       已达到最大配置数量（{{ MAX_CONFIGS }} 个）。如需覆盖更多目录，请提高扫描层级或删除不需要的配置。
     </div>
 
-    <AdminStatsGrid v-if="!hideStats">
-      <StatCard icon="fa-folder" :value="statsTotal" label="配置目录" tone="blue" />
-      <StatCard icon="fa-play" :value="statsRunning" label="已启用" tone="purple" />
-      <StatCard icon="fa-pause" :value="statsPaused" label="已暂停" tone="amber">
-        <template #actions>
-          <AppIconButton
-            icon="fa-sync-alt"
-            label="刷新"
-            variant="secondary"
-            size="xs"
-            :disabled="refreshing"
-            title="刷新任务列表"
-            @click="() => refreshAll()"
-          />
-        </template>
-      </StatCard>
-    </AdminStatsGrid>
-
     <AdminEmptyState
       v-if="listReady && !refreshing && !tasks.length"
-      icon="🔥"
+      icon="hand-database"
       title="还没有缓存任务"
       description="添加目录后，系统会定期预热列表缓存，减少浏览时的 API 请求。"
     >
@@ -754,7 +744,8 @@ defineExpose({
 }
 
 .retention-col-actions {
-  width: 220px;
+  /* 与 STRM / 目录整理页的操作列保持同一比例，按钮不至于贴边 */
+  width: 22%;
 }
 
 .retention-table td:first-child {
@@ -768,7 +759,13 @@ defineExpose({
 }
 
 .retention-table__actions {
-  width: 220px;
+  width: 22%;
+}
+
+/* 与其他两个页面一致：操作列表头与按钮都居中（需带 :last-child 才能压过 admin-table 的通用左对齐） */
+.retention-table th:last-child,
+.retention-table td:last-child {
+  text-align: center;
 }
 
 .retention-main {
@@ -806,8 +803,8 @@ defineExpose({
 .retention-actions {
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
 }
 
 .retention-form {
@@ -840,8 +837,9 @@ defineExpose({
     padding: 10px 8px;
   }
 
-  .retention-table__actions,
-  .retention-table__action-cell {
+  /* 窄屏下操作列收成图标宽度，因此改为右对齐 */
+  .retention-table th:last-child,
+  .retention-table td:last-child {
     width: 48px;
     text-align: right;
   }

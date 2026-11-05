@@ -22,8 +22,10 @@ import (
 )
 
 type fakeDeleterDriver struct {
-	deleted [][]string
-	listed  map[string][]domain.FileItem
+	deleted  [][]string
+	listed   map[string][]domain.FileItem
+	failIDs  map[string]error // 命中其中任一 ID 时 DeleteFiles 返回错误（nil 则全部成功）
+	listErrs map[string]error // 按 parent 返回 List 错误（可选）
 }
 
 func (d *fakeDeleterDriver) Config() driver.Config      { return driver.Config{Name: "x"} }
@@ -32,6 +34,9 @@ func (d *fakeDeleterDriver) Init(context.Context) error { return nil }
 func (d *fakeDeleterDriver) Drop(context.Context) error { return nil }
 func (d *fakeDeleterDriver) Ping(context.Context) error { return nil }
 func (d *fakeDeleterDriver) ListFiles(_ context.Context, parentID string) ([]domain.FileItem, error) {
+	if err := d.listErrs[parentID]; err != nil {
+		return nil, err
+	}
 	return d.listed[parentID], nil
 }
 
@@ -60,6 +65,11 @@ func TestBatchPause(t *testing.T) {
 }
 func (d *fakeDeleterDriver) DeleteFiles(_ context.Context, ids []string) error {
 	d.deleted = append(d.deleted, ids)
+	for _, id := range ids {
+		if err := d.failIDs[id]; err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -293,6 +303,15 @@ func (d *rangeDownloadDriver) ListFiles(context.Context, string) ([]domain.FileI
 }
 func (d *rangeDownloadDriver) ResolveDownload(context.Context, driver.DownloadRequest) (*domain.DownloadInfo, error) {
 	return &domain.DownloadInfo{URL: d.serverURL, Size: d.size}, nil
+}
+
+// chunkedRangeDownloadDriver 返回分片参数（1MB × 4 并发），用于验证跨盘分片并发下载路径。
+type chunkedRangeDownloadDriver struct {
+	rangeDownloadDriver
+}
+
+func (d *chunkedRangeDownloadDriver) ResolveDownload(context.Context, driver.DownloadRequest) (*domain.DownloadInfo, error) {
+	return &domain.DownloadInfo{URL: d.serverURL, Size: d.size, ChunkSize: 1 << 20, Concurrency: 4, TransferChunkSize: 1 << 20, TransferConcurrency: 4}, nil
 }
 
 func (d *blockingResumeDriver) Config() driver.Config      { return driver.Config{Name: "mock"} }
@@ -1374,19 +1393,6 @@ func TestCrossTransferDownloadRejectsTruncatedBody(t *testing.T) {
 	}
 }
 
-func TestDownloadContentRangeHelpers(t *testing.T) {
-	start, end, total, ok := parseDownloadContentRange("bytes 3-5/6")
-	if !ok || start != 3 || end != 5 || total != 6 {
-		t.Fatalf("range=%d-%d/%d ok=%v", start, end, total, ok)
-	}
-	if _, _, _, ok := parseDownloadContentRange("bytes 3-6/6"); ok {
-		t.Fatal("越界 Content-Range 不应通过")
-	}
-	if size, ok := unsatisfiedDownloadRangeSize("bytes */6"); !ok || size != 6 {
-		t.Fatalf("size=%d ok=%v", size, ok)
-	}
-}
-
 func TestDeleteFailedWebDAVTaskRemovesTemporaryFile(t *testing.T) {
 	m := NewManager(Options{DataDir: t.TempDir()})
 	temporaryFile := filepath.Join(t.TempDir(), "webdav.bin")
@@ -1530,5 +1536,161 @@ func TestResumePendingCrossTransferDownloadRunsBeforeNormalPending(t *testing.T)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("恢复任务未优先接棒下载")
+	}
+}
+
+// 同账号同目录下两个批次：A 批整目录删除成功、B 批退回逐文件且失败。
+// 回归验证：B 批失败不得把 A 批任务连坐标失败。
+func TestBatchDeleteFailureDoesNotBlameRootDeletedBatch(t *testing.T) {
+	drv := &fakeDeleterDriver{
+		listed: map[string][]domain.FileItem{
+			"parent-a": {{ID: "root-a", Name: "folder-a", IsDir: true}},
+			"parent-b": {{ID: "other", Name: "folder-b", IsDir: true}}, // B 的根目录未确认 → 退回逐文件
+		},
+		failIDs: map[string]error{"b1-file": errors.New("mock 删除失败")},
+	}
+	exec := driverexec.New(fakeProvider{drv: drv}, nil)
+	files := file.NewService(exec, nil, nil, nil, nil, nil)
+	m := NewManager(Options{Exec: exec, Files: files, DataDir: t.TempDir()})
+
+	makeTask := func(id, batchID, batchName, rootID, rootParent string) *taskState {
+		return &taskState{Task: Task{
+			TaskID: id, BatchID: batchID, BatchName: batchName,
+			AccountID: 7, Status: StatusSuccess, TargetPath: "nested-dir",
+			Result: map[string]any{
+				"file_id":              id + "-file",
+				"batch_root_id":        rootID,
+				"batch_root_parent_id": rootParent,
+				"batch_root_owned":     true,
+			},
+		}, runDone: make(chan struct{})}
+	}
+	m.mu.Lock()
+	m.tasks["a1"] = makeTask("a1", "batch-a", "folder-a", "root-a", "parent-a")
+	m.tasks["a2"] = makeTask("a2", "batch-a", "folder-a", "root-a", "parent-a")
+	m.tasks["b1"] = makeTask("b1", "batch-b", "folder-b", "root-b", "parent-b")
+	m.mu.Unlock()
+
+	result := m.BatchDelete(context.Background(), []string{"a1", "a2", "b1"}, true, true)
+
+	if len(result.FailedTaskIDs) != 1 || result.FailedTaskIDs[0] != "b1" {
+		t.Fatalf("FailedTaskIDs=%v，应只有 b1", result.FailedTaskIDs)
+	}
+	if len(result.DeletedTaskIDs) != 2 {
+		t.Fatalf("DeletedTaskIDs=%v，A 批两个任务应删除成功", result.DeletedTaskIDs)
+	}
+	m.mu.Lock()
+	_, a1Left := m.tasks["a1"]
+	_, a2Left := m.tasks["a2"]
+	m.mu.Unlock()
+	if a1Left || a2Left {
+		t.Fatalf("A 批任务被连坐未移除：a1=%v a2=%v", a1Left, a2Left)
+	}
+}
+
+// 分片并发下载回归：支持 Range 的源返回 206，应按驱动 Transfer 参数
+// 分片并发拉取并拼出完整文件（1MB 分片下 8MB+123 字节产生 9 个分片）。
+func TestCrossTransferDownloadUsesConcurrentRanges(t *testing.T) {
+	const totalSize = int64(8<<20 + 123)
+	content := make([]byte, totalSize)
+	for i := range content {
+		content[i] = byte('a' + i%26)
+	}
+	var rangeCount, inflight, maxInflight, badRange atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rangeCount.Add(1)
+		cur := inflight.Add(1)
+		defer inflight.Add(-1)
+		for {
+			max := maxInflight.Load()
+			if cur <= max || maxInflight.CompareAndSwap(max, cur) {
+				break
+			}
+		}
+		// 每个分片响应留一点耗时，让并发请求在服务端重叠可观测。
+		time.Sleep(5 * time.Millisecond)
+
+		raw := r.Header.Get("Range")
+		if raw == "" {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes 0-%d/%d", totalSize-1, totalSize))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(content)
+			return
+		}
+		var start, end int64
+		if _, err := fmt.Sscanf(raw, "bytes=%d-%d", &start, &end); err != nil {
+			badRange.Add(1)
+			http.Error(w, "bad range", http.StatusBadRequest)
+			return
+		}
+		if start >= totalSize {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", totalSize))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		if end >= totalSize {
+			end = totalSize - 1
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, totalSize))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(content[start : end+1])
+	}))
+	defer server.Close()
+
+	localPath := filepath.Join(t.TempDir(), "cross_transfer", "task.bin")
+	drv := &chunkedRangeDownloadDriver{rangeDownloadDriver{serverURL: server.URL, size: totalSize}}
+	exec := driverexec.New(fakeProvider{drv: drv}, nil)
+	m := NewManager(Options{
+		Exec:     exec,
+		Files:    file.NewService(exec, nil, nil, nil, nil, nil),
+		Playback: playback.NewService(exec, nil),
+		DataDir:  t.TempDir(),
+	})
+
+	const taskID = "concurrent-range"
+	m.mu.Lock()
+	m.tasks[taskID] = &taskState{
+		Task: Task{
+			TaskID:          taskID,
+			AccountID:       1,
+			SourceType:      SourceTypeCrossTransfer,
+			SourceAccountID: 2,
+			SourceFileID:    "source-file",
+			TargetPath:      "target-folder",
+			Status:          StatusPending,
+			Phase:           PhaseDownloading,
+			TotalBytes:      totalSize,
+		},
+		localPath: localPath,
+	}
+	m.mu.Unlock()
+
+	if !m.executeCrossTransferDownload(context.Background(), taskID) {
+		t.Fatal("分片并发下载失败")
+	}
+	if badRange.Load() != 0 {
+		t.Fatalf("收到无法解析的 Range 请求 %d 次", badRange.Load())
+	}
+	got, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if int64(len(got)) != totalSize {
+		t.Fatalf("local size=%d want %d", len(got), totalSize)
+	}
+	for i := range got {
+		if got[i] != content[i] {
+			t.Fatalf("content mismatch at %d: %q != %q", i, got[i], content[i])
+		}
+	}
+	if rangeCount.Load() < 3 {
+		t.Fatalf("range requests=%d，应至少包含 3 个分片", rangeCount.Load())
+	}
+	if maxInflight.Load() < 2 {
+		t.Fatalf("分片请求未并发：服务端最大同时请求=%d", maxInflight.Load())
+	}
+	task, ok := m.Get(context.Background(), taskID)
+	if !ok || task.Status != StatusPending || task.Phase != PhaseUploading || task.DownloadedBytes != totalSize {
+		t.Fatalf("task=%+v ok=%v", task, ok)
 	}
 }

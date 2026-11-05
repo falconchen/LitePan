@@ -7,6 +7,7 @@ import type { DeleteFileHooks } from "@/composables/useFileActions";
 import { useFileTableInline } from "@/composables/useFileTableInline";
 import FileIcon from "./FileIcon.vue";
 import FileTableHeader from "./FileTableHeader.vue";
+import FileInlineConfirmButtons from "./FileInlineConfirmButtons.vue";
 import FileGridSortMenu from "./FileGridSortMenu.vue";
 import FileContextMenu from "./FileContextMenu.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
@@ -35,6 +36,10 @@ const props = defineProps<{
   nameAlignFile: (file: FileItem) => void;
   coverExtractEnabled: boolean;
   coverExtractFile: (file: FileItem) => void;
+  shareSupported: boolean;
+  shareManageSupported: boolean;
+  createShare: (files: FileItem[]) => void;
+  manageShares: () => void;
   dragActive?: boolean;
   activeDropTargetId?: string;
   dragUnlockedTargetId?: string;
@@ -77,6 +82,10 @@ const inline = useFileTableInline({
   nameAlignFile: (file) => props.nameAlignFile(file),
   coverExtractEnabled: toRef(props, "coverExtractEnabled"),
   coverExtractFile: (file) => props.coverExtractFile(file),
+  shareSupported: toRef(props, "shareSupported"),
+  shareManageSupported: toRef(props, "shareManageSupported"),
+  createShare: (files) => props.createShare(files),
+  manageShares: () => props.manageShares(),
 });
 
 const {
@@ -284,7 +293,7 @@ const dragPreviewLockText = computed(() => {
 const dragPreviewStatusText = computed(() => dragPreviewLockText.value || dragPreviewSubtitle.value);
 
 const dragPreviewShowLock = computed(() => Boolean(props.activeDropTargetId));
-const dragPreviewLockIcon = computed(() => (props.dragUnlockedTargetId ? "lock-open" : "lock"));
+const dragPreviewLockIcon = computed(() => (props.dragUnlockedTargetId ? "hand-lock-open" : "hand-lock"));
 
 function updateDragPreviewPosition(event: DragEvent) {
   if (!dragPreviewVisible.value) return;
@@ -559,7 +568,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
               @click.stop
               @contextmenu.stop
             >
-              <span class="file-icon-wrap"><SvgIcon name="folder" :size="18" /></span>
+              <span class="file-icon-wrap"><SvgIcon name="badge-folder" :size="18" /></span>
               <span class="file-label" :title="createFolderPendingName">{{
                 createFolderPendingName
               }}</span>
@@ -569,7 +578,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
               </span>
             </div>
             <div v-else class="inline-rename-wrap inline-create-wrap" @click.stop @contextmenu.stop>
-              <span class="file-icon-wrap"><SvgIcon name="folder" :size="18" /></span>
+              <span class="file-icon-wrap"><SvgIcon name="badge-folder" :size="18" /></span>
               <input
                 :ref="bindCreateFolderInput"
                 v-model="createFolderDraft"
@@ -582,24 +591,12 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
                 @keydown.esc.prevent="cancelInlineCreateFolder()"
                 @blur="submitInlineCreateFolder()"
               />
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                title="确认"
-                @mousedown.prevent
-                @click="submitInlineCreateFolder()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                title="取消"
-                @mousedown.prevent
-                @click="cancelInlineCreateFolder()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons
+                confirm-title="确认"
+                cancel-title="取消"
+                @confirm="submitInlineCreateFolder()"
+                @cancel="cancelInlineCreateFolder()"
+              />
             </div>
           </td>
           <td class="size-col">-</td>
@@ -657,24 +654,12 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
                 @keydown.esc.prevent="cancelInlineRename()"
                 @blur="submitInlineRename()"
               />
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                title="确认"
-                @mousedown.prevent
-                @click="submitInlineRename()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                title="取消"
-                @mousedown.prevent
-                @click="cancelInlineRename()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons
+                confirm-title="确认"
+                cancel-title="取消"
+                @confirm="submitInlineRename()"
+                @cancel="cancelInlineRename()"
+              />
             </div>
             <div v-else class="file-name" @click.stop="emit('open', f)">
               <span class="file-icon-wrap"><FileIcon :file="f" :size="18" /></span>
@@ -727,7 +712,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
 
       <div v-if="showEmptyRow && !inlineCreatingFolder" class="grid-state">
         <template v-if="!loading">
-          <SvgIcon name="folder" :size="40" />
+          <SvgIcon name="badge-folder" :size="40" />
         </template>
         <p>{{ emptyStateText }}</p>
       </div>
@@ -740,7 +725,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
             @click.stop
             @contextmenu.stop
           >
-            <span class="file-card-icon"><SvgIcon name="folder" :size="40" /></span>
+            <span class="file-card-icon"><SvgIcon name="badge-folder" :size="40" /></span>
             <span class="file-card-name" :title="createFolderPendingName">{{
               createFolderPendingName
             }}</span>
@@ -750,7 +735,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
             </span>
           </div>
           <div v-else class="file-card-main file-card-rename" @click.stop @contextmenu.stop>
-            <span class="file-card-icon"><SvgIcon name="folder" :size="40" /></span>
+            <span class="file-card-icon"><SvgIcon name="badge-folder" :size="40" /></span>
             <div class="inline-rename-wrap inline-create-wrap">
               <input
                 :ref="bindCreateFolderInput"
@@ -764,22 +749,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
                 @keydown.esc.prevent="cancelInlineCreateFolder()"
                 @blur="submitInlineCreateFolder()"
               />
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                @mousedown.prevent
-                @click="submitInlineCreateFolder()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                @mousedown.prevent
-                @click="cancelInlineCreateFolder()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons @confirm="submitInlineCreateFolder()" @cancel="cancelInlineCreateFolder()" />
             </div>
           </div>
         </article>
@@ -836,22 +806,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
               @blur="submitInlineRename()"
             />
             <div class="inline-rename-wrap">
-              <button
-                type="button"
-                class="folder-inline-btn confirm"
-                @mousedown.prevent
-                @click="submitInlineRename()"
-              >
-                ✓
-              </button>
-              <button
-                type="button"
-                class="folder-inline-btn cancel"
-                @mousedown.prevent
-                @click="cancelInlineRename()"
-              >
-                ×
-              </button>
+              <FileInlineConfirmButtons @confirm="submitInlineRename()" @cancel="cancelInlineRename()" />
             </div>
           </div>
 
@@ -950,7 +905,6 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   color: var(--text-muted);
 }
 
-.state--empty p,
 .state--empty-cell {
   margin: 0;
   font-style: italic;
@@ -987,7 +941,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
 
 .file-list__drag-row-outline {
   position: absolute;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   border: 1px dashed color-mix(in srgb, var(--brand) 48%, transparent);
   pointer-events: none;
   z-index: 1;
@@ -1093,7 +1047,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
 .file-card {
   position: relative;
   min-width: 0;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
 }
 
 .file-card-main {
@@ -1104,7 +1058,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   gap: 8px;
   padding: 18px 10px 14px;
   border: none;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   background: transparent;
   cursor: pointer;
   text-align: center;
@@ -1197,7 +1151,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   gap: 12px;
   padding: 0 14px;
   border: 1px solid var(--border-soft);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: 0 16px 32px color-mix(in srgb, rgb(15 23 42) 14%, transparent);
   pointer-events: none;
@@ -1218,7 +1172,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   min-width: 14px;
   height: 14px;
   padding: 0 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1237,7 +1191,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   width: 28px;
   height: 28px;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1307,7 +1261,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   position: relative;
   width: 28px;
   height: 28px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1344,7 +1298,7 @@ function handleHeaderMenuKeydown(event: KeyboardEvent) {
   z-index: 1;
   width: 20px;
   height: 20px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   display: inline-flex;
   align-items: center;
   justify-content: center;

@@ -45,6 +45,17 @@ type WorkResult struct {
 	Files         []FileResult `json:"files,omitempty"`
 }
 
+// EpisodeRequest 只承载内置规则无法判断集数的文件。
+// 作品身份已经由第一阶段确认，避免把整季文件重复交给 AI。
+type EpisodeRequest struct {
+	WorkID    string `json:"work_id"`
+	Title     string `json:"title"`
+	Year      *int   `json:"year,omitempty"`
+	Season    *int   `json:"season,omitempty"`
+	Directory string `json:"directory,omitempty"`
+	Files     []File `json:"files"`
+}
+
 type BatchResult struct {
 	Items  []WorkResult `json:"items"`
 	Cached int          `json:"cached,omitempty"`
@@ -52,12 +63,17 @@ type BatchResult struct {
 }
 
 type BatchProgress struct {
-	Total        int
-	Completed    int
-	Cached       int
-	Failed       int
-	CurrentChunk int
-	TotalChunks  int
+	Total                 int
+	Completed             int
+	Cached                int
+	Failed                int
+	CurrentChunk          int
+	TotalChunks           int
+	CurrentBatchSize      int
+	SplitDepth            int
+	AttemptStartedAt      int64
+	AttemptTimeoutSeconds int
+	RetryingSmallerBatch  bool
 }
 
 type ProgressFunc func(BatchProgress)
@@ -70,4 +86,9 @@ type Enhancer interface {
 type ProgressEnhancer interface {
 	Enhancer
 	EnhanceWithProgress(context.Context, BatchRequest, ProgressFunc) (BatchResult, error)
+}
+
+// EpisodeResolver 是可选的文件级补判能力，仅在内置规则无法解析集数时调用。
+type EpisodeResolver interface {
+	ResolveEpisodes(context.Context, EpisodeRequest) ([]FileResult, error)
 }

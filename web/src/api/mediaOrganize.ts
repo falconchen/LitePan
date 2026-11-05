@@ -32,7 +32,10 @@ export interface MediaOrganizeRunResult {
   renamed?: number;
   moved?: number;
   skipped?: number;
+  normal_skipped?: number;
+  abnormal_skipped?: number;
   failed?: number;
+  pending?: number;
   stopped?: boolean;
 }
 
@@ -78,6 +81,11 @@ export interface MediaOrganizeProgress {
   ai_failed?: number;
   ai_chunk?: number;
   ai_chunks?: number;
+  ai_batch_size?: number;
+  ai_split_depth?: number;
+  ai_attempt_started_at?: number;
+  ai_attempt_timeout_seconds?: number;
+  ai_retrying?: boolean;
 }
 
 export interface MediaOrganizeLogEntry {
@@ -141,7 +149,11 @@ export interface MediaOrganizePlanResult {
 }
 
 export function planMediaOrganizeTask(id: string) {
-  return http.post<MediaOrganizePlanResult>(`/admin/media-organize/tasks/${id}/plan`);
+  return http.postWithTimeout<MediaOrganizePlanResult>(
+    `/admin/media-organize/tasks/${id}/plan`,
+    undefined,
+    2 * 60 * 60 * 1000,
+  );
 }
 
 export function fetchMediaOrganizePlan(id: string) {

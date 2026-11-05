@@ -18,10 +18,10 @@
             title="交换源与目标"
             @click="swap"
           >
-            <i class="fas fa-right-left"></i>
+            <SvgIcon name="right-left" size="1em" />
           </button>
           <span v-else class="tb-flow" title="单向线路，不可交换">
-            <i class="fas fa-arrow-right-long"></i>
+            <SvgIcon name="arrow-right-long" size="1em" />
           </span>
           <span v-if="routeBidirectional" class="tb-swap-hint">可交换</span>
         </div>
@@ -39,14 +39,14 @@
       <div class="panel src">
         <div class="panel-pick">
           <button class="combo" @click="openPicker('src')">
-            <span class="c-ic"><i class="fas fa-hdd"></i></span>
+            <span class="c-ic"><SvgIcon name="hdd" size="1em" /></span>
             <span class="c-text" :class="{ placeholder: !src }" :title="srcPickerTitle">{{ srcPickerText }}</span>
-            <span class="c-caret"><i class="fas fa-chevron-down"></i></span>
+            <span class="c-caret"><SvgIcon name="chevron-down" size="1em" /></span>
           </button>
         </div>
         <div class="tree tree-host" ref="srcTreeRef">
           <div v-if="scanSummary && !phaseStatus" class="tree-scan-banner" :class="{ warn: scanSummary.warn }">
-            <i class="fas" :class="scanSummary.warn ? 'fa-triangle-exclamation' : 'fa-circle-check'"></i>
+            <SvgIcon :name="scanSummary.warn ? 'triangle-exclamation' : 'circle-check'" size="1em" />
             <span>{{ scanSummary.text }}</span>
           </div>
           <CrossTransferTree v-if="srcTree && srcTree.length" :nodes="srcTree" mode="src" :depth="0" />
@@ -65,9 +65,9 @@
       <div class="panel dst">
         <div class="panel-pick">
           <button class="combo" @click="openPicker('dst')">
-            <span class="c-ic"><i class="fas fa-hdd"></i></span>
+            <span class="c-ic"><SvgIcon name="hdd" size="1em" /></span>
             <span class="c-text" :class="{ placeholder: !dst }">{{ dst ? (dst.accName + ' · ' + dst.path) : '选择账号 · 目录' }}</span>
-            <span class="c-caret"><i class="fas fa-chevron-down"></i></span>
+            <span class="c-caret"><SvgIcon name="chevron-down" size="1em" /></span>
           </button>
         </div>
         <div class="tree">
@@ -112,7 +112,7 @@
           >
             <transition name="ct-tip-fade" mode="out-in">
               <span :key="footerTipIndex" class="ct-footer-scroll-text">
-                <i class="fas fa-circle-info"></i>
+                <SvgIcon name="circle-info" size="1em" />
                 {{ currentFooterTip.text }}
               </span>
             </transition>
@@ -124,9 +124,9 @@
             target="_blank"
             rel="noopener"
           >
-            <i class="fas fa-circle-info"></i>
+            <SvgIcon name="circle-info" size="1em" />
             <span>点击查看兜底传输跨盘任务进度</span>
-            <i class="fas fa-arrow-up-right-from-square ct-relay-inline-arrow"></i>
+            <SvgIcon name="arrow-up-right-from-square" size="1em" class="ct-relay-inline-arrow" />
           </a>
         </div>
 
@@ -139,7 +139,7 @@
               title="传输设置"
               @click="toggleSettingsMenu"
             >
-              <i class="fas fa-sliders"></i>
+              <SvgIcon name="sliders" size="1em" />
             </button>
             <Teleport to="body">
               <div
@@ -223,7 +223,7 @@
             :disabled="running === 'probe' ? false : !canProbe"
             @click="running === 'probe' ? stopRun() : probe()"
           >
-            <i :class="running === 'probe' ? 'fas fa-stop' : 'fas fa-magnifying-glass'"></i>
+            <SvgIcon :name="running === 'probe' ? 'stop' : 'magnifying-glass'" size="1em" />
             {{ running === 'probe' ? '停止试探' : '试探秒传' }}
           </button>
           <button
@@ -232,7 +232,7 @@
             :disabled="running === 'exec' ? false : !canStart"
             @click="running === 'exec' ? stopRun() : start()"
           >
-            <i :class="running === 'exec' ? 'fas fa-stop' : 'fas fa-bolt'"></i>
+            <SvgIcon :name="running === 'exec' ? 'stop' : 'bolt'" size="1em" />
             {{ running === 'exec' ? '停止' : '开始传输' }}
           </button>
         </div>
@@ -261,11 +261,11 @@
         <div class="mx-bar">
           <div class="mx-title">秒传星图</div>
           <div class="mx-status">{{ statusText }}</div>
-          <button type="button" class="mx-x" title="关闭" @click="matrixOpen = false"><i class="fas fa-xmark"></i></button>
+          <button type="button" class="mx-x" title="关闭" aria-label="关闭" @click="matrixOpen = false"><SvgIcon name="xmark" :size="14" /></button>
         </div>
         <div class="mx-scroll">
           <div v-if="!routes.length" class="mx-empty">
-            <i class="fas fa-filter-circle-xmark"></i>
+            <SvgIcon name="filter-circle-xmark" size="1em" />
             <p>没有匹配的线路</p>
             <small>当前暂无可用的秒传组合</small>
           </div>
@@ -316,6 +316,7 @@ import {
 } from "@/api/crossTransfer";
 import { useConfirm } from "@/composables/useConfirm";
 import { toast } from "@/composables/useToast";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const { confirm, showConfirm } = useConfirm();
 
@@ -784,7 +785,7 @@ async function scanSource(clearTree = true) {
     if (running.value) phaseStatus.value = ''
     return scan
   } catch (e) {
-    if (e?.name === 'CanceledError' || e?.name === 'AbortError') return null
+    if (e?.name === 'AbortError') return null
     notify('error', '扫描失败: ' + (e?.message || e))
     return null
   } finally {
@@ -1041,8 +1042,6 @@ async function start() {
         const message = `秒传完成 ${metrics.done}/${files.length}${skipText}`
         if (relayQueued > 0) {
           relayNotice.value = {
-            rapidDone: metrics.done,
-            total: files.length,
             relayQueued,
           }
         } else {
@@ -1625,7 +1624,7 @@ onUnmounted(() => {
   flex-direction: column;
   width: min(860px, 96vw);
   max-height: 90vh;
-  border-radius: 12px; /* 与 AppModal bare 外壳圆角一致，避免四角露白 */
+  border-radius: var(--radius-md); /* 与 AppModal bare 外壳圆角一致，避免四角露白 */
   overflow: hidden;
   background: radial-gradient(1100px 500px at 50% -10%, #1a2f55 0%, #101f3b 48%, #0b1730 100%);
   box-shadow: 0 26px 70px rgba(2, 6, 23, 0.55);
@@ -1670,7 +1669,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: #7f93c4;
   cursor: pointer;
@@ -1695,7 +1694,7 @@ onUnmounted(() => {
   border: 1px solid rgba(140, 170, 255, 0.3);
   background: transparent;
   color: #9fb0d6;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   padding: 9px 18px;
   font-size: 13px;
   font-weight: 600;

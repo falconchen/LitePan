@@ -51,6 +51,7 @@ type Server struct {
 	handler  *webdav.Handler
 	configs  domain.ConfigRepository
 	wc       *webdavCache
+	auth     *authCache
 }
 
 type webDAVHandlerError struct {
@@ -87,7 +88,7 @@ func New(d Deps) *Server {
 				captured.err = err
 			}
 			if err != nil && log.Enabled(r.Context(), slog.LevelDebug) {
-				log.Debug("webdav", "method", r.Method, "path", r.URL.Path, "err", err)
+				log.Debug("WebDAV 请求处理失败", "method", r.Method, "path", r.URL.Path, "err", err)
 			}
 		},
 	}
@@ -99,6 +100,7 @@ func New(d Deps) *Server {
 		handler:  h,
 		configs:  d.Configs,
 		wc:       wc,
+		auth:     newAuthCache(),
 	}
 }
 
@@ -114,6 +116,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !s.authenticate(w, r) {
 		return
 	}
+	r = r.WithContext(withAccountListCache(r.Context()))
 	if r.Method == http.MethodGet || r.Method == http.MethodHead {
 		if s.serveRead(w, r) {
 			return
@@ -293,11 +296,8 @@ func (s *Server) checkCredentials(ctx context.Context, username, password string
 			storedPass = strings.TrimSpace(v)
 		}
 	}
-	if username != storedUser {
-		return false
-	}
 	if strings.HasPrefix(storedPass, "pbkdf2:") || strings.HasPrefix(storedPass, "scrypt:") {
-		return security.CheckPasswordHash(storedPass, password)
+		return s.auth.verify(storedUser, storedPass, username, password, security.CheckPasswordHash)
 	}
 	return false
 }

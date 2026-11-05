@@ -1,19 +1,17 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import { getApiErrorMessage } from "@/api/client";
 import { fetchSettings, saveSettings, type SettingItem } from "@/api/settings";
 import SettingsCard from "@/components/admin/SettingsCard.vue";
 import SettingsFormRow from "@/components/admin/SettingsFormRow.vue";
-import { bindSettingsPanelExpose, useSettingsKVForm } from "@/composables/useSettingsForm";
+import { bindSettingsPanelExpose, useSettingsKVForm, useSettingsSave } from "@/composables/useSettingsForm";
 import { useSettingsLoad } from "@/composables/useSettingsLoad";
-import { toast } from "@/composables/useToast";
 import { CACHE_SETTING_KEYS, WEBDAV_CACHE_SETTING_KEY } from "@/constants/cacheSettings";
 import "@/styles/admin-shared.css";
 
 const CACHE_SETTINGS_ACCENT = "#4c74df";
 
 const { loading, loaded, runLoad } = useSettingsLoad(false);
-const saving = ref(false);
+const { saving, runSave } = useSettingsSave();
 
 const items = ref<SettingItem[]>([]);
 const { values: form, assignEntry, revertEntries, isEntryChanged } = useSettingsKVForm();
@@ -58,19 +56,13 @@ async function save() {
   for (const it of cacheItems.value) {
     if (isChanged(it)) changed[it.key] = form[it.key];
   }
-  saving.value = true;
-  try {
+  await runSave(async () => {
     const payload = await saveSettings(changed);
     items.value = payload.items ?? [];
     for (const it of cacheItems.value) {
       assignEntry(it.key, it.value, it.type);
     }
-    toast.success("缓存设置已保存");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "缓存设置已保存" });
 }
 
 onMounted(() => {

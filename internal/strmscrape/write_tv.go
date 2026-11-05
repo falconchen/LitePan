@@ -15,12 +15,11 @@ import (
 )
 
 type tmdbSeasonDetail struct {
-	Name         string
-	Overview     string
-	PosterPath   string
-	AirDate      string
-	SeasonNumber int
-	Episodes     []tmdbEpisodeDetail
+	Name       string
+	Overview   string
+	PosterPath string
+	AirDate    string
+	Episodes   []tmdbEpisodeDetail
 }
 
 type tmdbEpisodeDetail struct {
@@ -38,8 +37,12 @@ type tmdbImageDownloader interface {
 }
 
 // writeOptionalArtwork 将图片下载故障降为警告，但保留取消和本地写入错误。
-func (s *Service) writeOptionalArtwork(ctx context.Context, client tmdbImageDownloader, imagePath, outputPath, label string) (bool, error) {
-	data, err := client.DownloadImage(ctx, imagePath, "w500")
+func (s *Service) writeOptionalArtwork(ctx context.Context, client tmdbImageDownloader, imagePath, size, outputPath, label string) (bool, error) {
+	imagePath = strings.TrimSpace(imagePath)
+	if imagePath == "" {
+		return false, nil
+	}
+	data, err := client.DownloadImage(ctx, imagePath, size)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return false, ctxErr
@@ -48,7 +51,7 @@ func (s *Service) writeOptionalArtwork(ctx context.Context, client tmdbImageDown
 			s.log.Warn("STRM 刮削可选图片下载失败，已跳过",
 				"artwork", label,
 				"output", outputPath,
-				"error", err,
+				"error", err.Error(),
 			)
 		}
 		return false, nil
@@ -68,12 +71,12 @@ func (s *Service) writeTVExtras(ctx context.Context, client *tmdb.Client, g work
 		interval = 300 * time.Millisecond
 	}
 
+	seasonDirs := listLocalSeasonDirs(g.absDir)
 	// 剧集根季海报（seasonXX-poster.jpg）
-	if err := s.writeSeasonPosters(ctx, client, g, info.TMDBID, overwrite); err != nil {
+	if err := s.writeSeasonPosters(ctx, client, g, info.TMDBID, overwrite, seasonDirs); err != nil {
 		return err
 	}
 
-	seasonDirs := listLocalSeasonDirs(g.absDir)
 	// 无 Season 目录时，按分集文件名里的季号补齐
 	seasonNums := map[int]string{} // season -> abs season dir (可空表示写在剧集根旁的虚拟季，仅写 seasonXX-poster)
 	for _, d := range seasonDirs {
@@ -146,7 +149,7 @@ func (s *Service) writeTVExtras(ctx context.Context, client *tmdb.Client, g work
 			}
 			seasonPoster := filepath.Join(seasonDir, "poster.jpg")
 			if (overwrite || !fileExists(seasonPoster)) && detail.PosterPath != "" {
-				if _, err := s.writeOptionalArtwork(ctx, client, detail.PosterPath, seasonPoster, fmt.Sprintf("第 %d 季目录海报", season)); err != nil {
+				if _, err := s.writeOptionalArtwork(ctx, client, detail.PosterPath, "original", seasonPoster, fmt.Sprintf("第 %d 季目录海报", season)); err != nil {
 					return err
 				}
 			}
@@ -174,7 +177,7 @@ func (s *Service) writeTVExtras(ctx context.Context, client *tmdb.Client, g work
 			}
 			thumb := stem + "-thumb.jpg"
 			if (overwrite || !fileExists(thumb)) && ep.StillPath != "" {
-				if _, err := s.writeOptionalArtwork(ctx, client, ep.StillPath, thumb, fmt.Sprintf("S%02dE%02d 缩略图", season, ep.EpisodeNumber)); err != nil {
+				if _, err := s.writeOptionalArtwork(ctx, client, ep.StillPath, "w500", thumb, fmt.Sprintf("S%02dE%02d 缩略图", season, ep.EpisodeNumber)); err != nil {
 					return err
 				}
 				time.Sleep(interval)
@@ -232,14 +235,10 @@ func fetchSeasonDetail(ctx context.Context, client *tmdb.Client, tmdbID string, 
 		return nil, err
 	}
 	out := &tmdbSeasonDetail{
-		Name:         strings.TrimSpace(anyString(m["name"])),
-		Overview:     strings.TrimSpace(anyString(m["overview"])),
-		PosterPath:   strings.TrimSpace(anyString(m["poster_path"])),
-		AirDate:      strings.TrimSpace(anyString(m["air_date"])),
-		SeasonNumber: season,
-	}
-	if n := asInt(m["season_number"]); n != nil {
-		out.SeasonNumber = *n
+		Name:       strings.TrimSpace(anyString(m["name"])),
+		Overview:   strings.TrimSpace(anyString(m["overview"])),
+		PosterPath: strings.TrimSpace(anyString(m["poster_path"])),
+		AirDate:    strings.TrimSpace(anyString(m["air_date"])),
 	}
 	rawEps, _ := m["episodes"].([]any)
 	for _, item := range rawEps {

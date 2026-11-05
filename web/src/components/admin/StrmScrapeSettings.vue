@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { getApiErrorMessage } from "@/api/client";
 import { testMediaOrganizeTmdb } from "@/api/mediaOrganize";
 import {
   fetchStrmScrapeSettings,
@@ -17,9 +16,9 @@ import SettingsCard from "@/components/admin/SettingsCard.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
 import SettingsRow from "@/components/admin/SettingsRow.vue";
 import TmdbHostsHelpTip from "@/components/admin/TmdbHostsHelpTip.vue";
-import { useSettingsForm, bindSettingsPanelExpose } from "@/composables/useSettingsForm";
+import { useSettingsForm, bindSettingsPanelExpose, useSettingsSave } from "@/composables/useSettingsForm";
 import { useSettingsLoad } from "@/composables/useSettingsLoad";
-import { toast } from "@/composables/useToast";
+import { runTmdbTest } from "@/composables/useTmdbTest";
 
 const SCRAPE_SETTINGS_ACCENT = "#38bdf8";
 
@@ -35,7 +34,7 @@ const writeModeOptions = [
 ];
 
 const { loading, loaded, runLoad } = useSettingsLoad();
-const saving = ref(false);
+const { saving, runSave } = useSettingsSave();
 const tmdbTesting = ref(false);
 
 const {
@@ -47,6 +46,10 @@ const {
   revert: revertToBaseline,
 } = useSettingsForm<StrmScrapeSettings>({
   write_mode: "missing_only",
+  episode_info: true,
+  fanart: false,
+  actors: false,
+  clearlogo: false,
   tmdb_api_key: "",
   tmdb_language: "zh-CN",
   tmdb_api_host: "https://api.themoviedb.org",
@@ -64,6 +67,10 @@ async function loadSettings(opts?: { silent?: boolean }) {
       const data = await fetchStrmScrapeSettings();
       applyBaseline({
         write_mode: (data.write_mode as StrmScrapeWriteMode) || "missing_only",
+        episode_info: Boolean(data.episode_info),
+        fanart: Boolean(data.fanart),
+        actors: Boolean(data.actors),
+        clearlogo: Boolean(data.clearlogo),
         tmdb_api_key: data.tmdb_api_key || "",
         tmdb_language: data.tmdb_language || "zh-CN",
         tmdb_api_host: data.tmdb_api_host || "https://api.themoviedb.org",
@@ -81,9 +88,7 @@ async function loadSettings(opts?: { silent?: boolean }) {
 }
 
 async function saveSettings() {
-  if (saving.value) return;
-  saving.value = true;
-  try {
+  await runSave(async () => {
     const data = await saveStrmScrapeSettings({
       ...settings,
       tmdb_request_interval_ms: Number(settings.tmdb_request_interval_ms),
@@ -95,19 +100,14 @@ async function saveSettings() {
       proxy_password: "",
     });
     snapshotBaseline();
-    toast.success("刮削设置已保存");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "刮削设置已保存" });
 }
 
 async function testTmdb() {
   if (tmdbTesting.value) return;
   tmdbTesting.value = true;
   try {
-    const result = await testMediaOrganizeTmdb({
+    await runTmdbTest(() => testMediaOrganizeTmdb({
       tmdb_api_key: settings.tmdb_api_key,
       tmdb_language: settings.tmdb_language,
       tmdb_api_host: settings.tmdb_api_host,
@@ -117,20 +117,7 @@ async function testTmdb() {
       proxy_username: settings.proxy_username,
       proxy_password: settings.proxy_password,
       tmdb_request_interval_ms: Number(settings.tmdb_request_interval_ms),
-    });
-    const apiOK = result.api_ok ?? result.ok;
-    const imageOK = result.image_ok ?? true;
-    if (apiOK && imageOK) {
-      toast.success("TMDB 连通正常：API ✓ 图片 ✓");
-    } else if (apiOK && !imageOK) {
-      toast.error("TMDB 部分异常：API ✓ 图片 ×");
-    } else if (!apiOK && imageOK) {
-      toast.error("TMDB 部分异常：API × 图片 ✓");
-    } else {
-      toast.error("TMDB 全部异常：API × 图片 ×");
-    }
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "TMDB 测试失败"));
+    }));
   } finally {
     tmdbTesting.value = false;
   }
@@ -162,6 +149,22 @@ defineExpose(
           </template>
           <template #control>
             <AppSelect v-model="settings.write_mode" :options="writeModeOptions" />
+          </template>
+        </SettingsRow>
+        <SettingsRow
+          :show-changed-badge="true"
+          :changed="isFieldChanged('episode_info') || isFieldChanged('fanart') || isFieldChanged('actors') || isFieldChanged('clearlogo')"
+        >
+          <template #info>
+            <div class="settings-row__label">额外刮削</div>
+          </template>
+          <template #control>
+            <div class="scrape-extra-options">
+              <label><input v-model="settings.episode_info" type="checkbox" />分集信息</label>
+              <label><input v-model="settings.fanart" type="checkbox" />详情页背景图</label>
+              <label><input v-model="settings.actors" type="checkbox" />演员信息</label>
+              <label><input v-model="settings.clearlogo" type="checkbox" />影片 Logo</label>
+            </div>
           </template>
         </SettingsRow>
       </SettingsCard>
@@ -301,5 +304,52 @@ defineExpose(
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+}
+.scrape-extra-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+.scrape-extra-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.scrape-extra-options input {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  border: 1.5px solid var(--border-strong, var(--border));
+  border-radius: 4px;
+  background: transparent;
+  display: grid;
+  place-content: center;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.scrape-extra-options input::before {
+  content: "";
+  width: 7px;
+  height: 4px;
+  border-left: 1.8px solid var(--settings-accent);
+  border-bottom: 1.8px solid var(--settings-accent);
+  transform: rotate(-45deg) scale(0);
+  transform-origin: center;
+  transition: transform 0.12s ease;
+}
+.scrape-extra-options input:checked {
+  border-color: var(--settings-accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--settings-accent) 12%, transparent);
+}
+.scrape-extra-options input:checked::before {
+  transform: rotate(-45deg) scale(1);
+}
+.scrape-extra-options input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--settings-accent) 28%, transparent);
+  outline-offset: 2px;
 }
 </style>

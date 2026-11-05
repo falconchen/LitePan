@@ -76,7 +76,6 @@ export function useUploadTaskStream(deps: UploadTaskDeps, store: UploadTaskStore
       const tasks = await uploadApi.listTasks();
       store.replaceRemoteUploadTasks(tasks);
       uploadAuthDenied = false;
-      tasks.forEach(store.ensureUploadTaskDisplayOrder);
       store.pruneLocalUploadTasksByStableKeys(tasks.map((task) => getUploadTaskStableKey(task)));
       refreshCurrentDirectoryForNewSuccess(tasks);
       if (!store.uploadTaskPanelOpen.value) {
@@ -142,7 +141,6 @@ export function useUploadTaskStream(deps: UploadTaskDeps, store: UploadTaskStore
           refreshCurrentDirectoryForNewSuccess(tasks, false);
         } else {
           store.replaceRemoteUploadTasks(tasks);
-          tasks.forEach(store.ensureUploadTaskDisplayOrder);
           store.pruneLocalUploadTasksByStableKeys(tasks.map((task) => getUploadTaskStableKey(task)));
           refreshCurrentDirectoryForNewSuccess(tasks);
         }
@@ -202,14 +200,6 @@ export function useUploadTaskStream(deps: UploadTaskDeps, store: UploadTaskStore
 }
 
 export type UploadTaskStream = ReturnType<typeof useUploadTaskStream>;
-
-export function getActiveRemoteUploadSlotUsage(store: UploadTaskStore) {
-  return store.uploadTasks.value.filter((t) => {
-    if (t.status === "running") return true;
-    if (t.status === "pending") return !store.pendingRemoteResumeTaskIds.has(String(t.task_id));
-    return false;
-  }).length;
-}
 
 export function getNextLocalUploadTaskCandidate(store: UploadTaskStore) {
   return (

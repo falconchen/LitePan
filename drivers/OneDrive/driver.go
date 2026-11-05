@@ -20,8 +20,9 @@ const (
 
 type Driver struct {
 	driver.AuthRefreshControl
-	add    Addition
-	client *http.Client
+	add          Addition
+	client       *http.Client
+	uploadClient *http.Client
 
 	oauthBase    string
 	intervalGate driver.RequestIntervalGate
@@ -78,6 +79,9 @@ func (d *Driver) Init(ctx context.Context) error {
 	if d.client == nil {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 90 * time.Second})
 	}
+	if d.uploadClient == nil {
+		d.uploadClient = httpx.NewUploadClient(d.client, 60*time.Second, config.UploadUseHTTP2)
+	}
 	d.mu.Lock()
 	if d.token == "" {
 		d.token = strings.TrimSpace(d.add.AccessToken)
@@ -100,6 +104,7 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(context.Context) error {
 	httpx.CloseClient(d.client)
+	httpx.CloseClient(d.uploadClient)
 	return nil
 }
 

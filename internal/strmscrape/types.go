@@ -88,7 +88,11 @@ type Progress struct {
 }
 
 type Settings struct {
-	WriteMode string `json:"write_mode"`
+	WriteMode   string `json:"write_mode"`
+	EpisodeInfo bool   `json:"episode_info"`
+	Fanart      bool   `json:"fanart"`
+	Actors      bool   `json:"actors"`
+	ClearLogo   bool   `json:"clearlogo"`
 
 	TmdbAPIKey            string `json:"tmdb_api_key"`
 	TmdbLanguage          string `json:"tmdb_language"`

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { containsQuery } from "@/utils/format";
 import { computed, onMounted, reactive, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
 import {
@@ -10,7 +11,7 @@ import {
 import { confirm } from "@/composables/useConfirm";
 import { toast } from "@/composables/useToast";
 import AppButton from "@/components/base/AppButton.vue";
-import CloudToolCard from "@/components/admin/CloudToolCard.vue";
+import ToolCard from "@/components/admin/ToolCard.vue";
 import ProxyWorkspace, { type ProxyField, type ProxyWorkspaceItem } from "@/components/admin/ProxyWorkspace.vue";
 import QuarkTVBindModal from "@/components/admin/QuarkTVBindModal.vue";
 
@@ -114,7 +115,7 @@ const workspaceFields = computed<ProxyField[]>(() => {
       { value: "proxy_list", label: "代理名单" },
     ],
     helpTitle: "客户端分流",
-    helpBody: "直连名单：名单里的播放器走夸克 TV，其他走本机代理。<br>代理名单：名单里的播放器走本机代理，其他走夸克 TV。<br>多个名称用分号分隔，不区分大小写。Emby 等由服务端 FFmpeg 拉流时，无法识别原播放器名称。",
+    helpBody: "直连名单：名单里的播放器走夸克 TV，其他走本机代理。<br>代理名单：名单里的播放器走本机代理，其他走夸克 TV。<br>多个名称用分号分隔，不区分大小写。Emby/Jellyfin 等由服务端 FFmpeg 拉流时，无法识别原播放器名称。",
     placeholder: "例如：vidhub",
     hidden: qtvForm.play_mode !== "split",
   });
@@ -122,8 +123,7 @@ const workspaceFields = computed<ProxyField[]>(() => {
 });
 
 function matches(title: string) {
-  const q = props.searchQuery.trim().toLowerCase();
-  return !q || title.toLowerCase().includes(q);
+  return containsQuery(title, props.searchQuery);
 }
 
 async function load() {
@@ -312,7 +312,7 @@ async function saveSettings() {
 
 <template>
   <div v-show="matches('夸克 STRM 接管')">
-    <CloudToolCard
+    <ToolCard
       :enabled="qtvStatus.enabled"
       name="夸克 STRM 接管"
       driver="夸克网盘 · TV 版 302 直链"
@@ -350,14 +350,14 @@ async function saveSettings() {
           账号绑定
         </AppButton>
       </template>
-    </CloudToolCard>
+    </ToolCard>
 
     <ProxyWorkspace
       v-model="qtvForm"
       :open="qtvWorkspaceOpen"
       title="夸克 STRM 接管 · 账号绑定"
-      caption="已绑定账号"
-      icon="☁️"
+      caption=""
+      icon="hand-cloud"
       :subtitle="selectedBinding ? `TV 账号：${selectedBinding.tv_nickname || '未知'} · 会员：${displayMembership(selectedBinding)}` : ''"
       :items="workspaceItems"
       :selected-id="qtvSelectedID"
@@ -389,43 +389,4 @@ async function saveSettings() {
 </template>
 
 <style scoped>
-.check-toggle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 0;
-  padding: 0;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  background: var(--border);
-  color: var(--text-muted);
-  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.check-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
-.check-toggle:hover {
-  background: var(--surface-hover);
-}
-
-.check-toggle.on {
-  background: var(--success);
-  color: #fff;
-  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.16);
-}
-
-.check-toggle.on:hover {
-  background: color-mix(in srgb, var(--success) 88%, #000);
-}
-
-.check-toggle:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 </style>

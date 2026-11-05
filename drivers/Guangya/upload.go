@@ -669,7 +669,7 @@ func (d *Driver) ossDo(ctx context.Context, method, rawURL string, headers http.
 			req.Header.Set(k, v)
 		}
 	}
-	resp, err := d.client.Do(req)
+	resp, err := d.uploadClient.Do(req)
 	if err != nil {
 		return nil, nil, domain.Wrap(domain.CodeDriverError, err)
 	}

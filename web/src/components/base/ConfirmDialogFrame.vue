@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
+import ModalCloseButton from "@/components/base/ModalCloseButton.vue";
 import AppButton from "@/components/base/AppButton.vue";
 import ConfirmDialogPresets from "@/components/base/ConfirmDialogPresets.vue";
 import {
@@ -72,19 +73,7 @@ function onCheckboxInput(event: Event) {
   >
     <header class="confirm-modal__head">
       <h3 id="confirm-dialog-title" class="confirm-modal__title">{{ title }}</h3>
-      <button
-        type="button"
-        class="confirm-modal__close"
-        aria-label="关闭"
-        :disabled="loading"
-        @click="emit('cancel')"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-          <path
-            d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"
-          />
-        </svg>
-      </button>
+      <ModalCloseButton :disabled="loading" @click="emit('cancel')" />
     </header>
 
     <div class="confirm-modal__body">
@@ -99,7 +88,7 @@ function onCheckboxInput(event: Event) {
         <div v-else class="confirm-modal__confirm">
           <div class="confirm-modal__icon-wrap">
             <div class="confirm-modal__flat-icon" :class="`confirm-modal__flat-icon--${iconTone}`">
-              <SvgIcon :name="iconSvg" :size="22" class-name="confirm-modal__icon" />
+              <SvgIcon :name="iconSvg" :size="18" class-name="confirm-modal__icon" />
             </div>
           </div>
           <div class="confirm-modal__content">

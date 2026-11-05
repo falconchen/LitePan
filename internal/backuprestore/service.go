@@ -608,7 +608,7 @@ func (s *Service) readPending() (pendingPlan, bool) {
 	if err := readJSONFile(s.pendingPath(), &plan); err != nil {
 		return pendingPlan{}, false
 	}
-	if plan.Version != 1 || !validRecordID(plan.ID) || plan.StageDir != plan.ID || !validRecordID(plan.SourceID) {
+	if !plan.valid() {
 		return pendingPlan{}, false
 	}
 	return plan, true

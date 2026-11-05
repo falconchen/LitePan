@@ -6,6 +6,7 @@ import { uploadApi } from "@/api/upload";
 import { toast } from "@/composables/useToast";
 import AccountFolderField from "@/components/admin/AccountFolderField.vue";
 import LocalDirBrowserModal from "@/components/common/LocalDirBrowserModal.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const OFFLINE_KEYS = {
   tempDir: "builtin_offline_temp_dir",
@@ -235,7 +236,7 @@ onMounted(() => {
     >
       <header class="task-settings__head">
         <strong>任务设置</strong>
-        <button type="button" aria-label="关闭" @click="emit('close')">×</button>
+        <button type="button" aria-label="关闭" @click="emit('close')"><SvgIcon name="xmark" :size="14" /></button>
       </header>
 
       <div class="task-settings__body">
@@ -358,7 +359,7 @@ onMounted(() => {
   max-height: calc(min(720px, 86vh) - 58px);
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
   z-index: 130;
@@ -396,7 +397,7 @@ onMounted(() => {
   height: 30px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   font-size: 25px;
@@ -427,7 +428,7 @@ onMounted(() => {
   min-height: 78px;
   padding: 15px 16px;
   border: 1px solid var(--border-soft);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface-sunken);
 }
 
@@ -477,7 +478,7 @@ onMounted(() => {
   flex: none;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface);
 }
 
@@ -513,7 +514,7 @@ onMounted(() => {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface);
 }
 
@@ -554,7 +555,7 @@ onMounted(() => {
 .task-settings__error {
   margin: 0 0 14px;
   padding: 10px 12px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--danger) 8%, transparent);
   font-size: 12px;
 }

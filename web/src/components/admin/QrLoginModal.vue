@@ -6,6 +6,7 @@ import { toast } from "@/composables/useToast";
 import AppPlainModal from "@/components/base/AppPlainModal.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -237,7 +238,7 @@ onUnmounted(() => {
 
       <div class="qr-panel-body">
         <div v-if="phase === 'loading'" class="qr-state qr-state--loading">
-          <BusySpinner :size="28" color="var(--brand)" />
+          <BusySpinner :size="26" color="var(--brand)" />
           <span>正在生成二维码...</span>
         </div>
 
@@ -249,7 +250,7 @@ onUnmounted(() => {
         </div>
 
         <div v-else class="qr-state qr-state--failed">
-          <i class="fas fa-circle-exclamation"></i>
+          <SvgIcon name="circle-exclamation" size="1em" />
           <div class="qr-result-title">{{ phase === "expired" ? "二维码已过期" : "扫码登录失败" }}</div>
           <div class="qr-hint">{{ message || "二维码已失效，请关闭后重新获取" }}</div>
           <button class="qr-retry" type="button" @click="start">重新获取</button>
@@ -288,7 +289,7 @@ onUnmounted(() => {
 .qr-image {
   width: 220px;
   height: 220px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: #fff;
   padding: 8px;
@@ -311,11 +312,11 @@ onUnmounted(() => {
   color: #b91c1c;
 }
 
-.qr-state i {
+.qr-state i, .qr-state .lp-svg-icon {
   font-size: 40px;
 }
 
-.qr-state--loading i {
+.qr-state--loading i, .qr-state--loading .lp-svg-icon {
   color: var(--brand);
 }
 

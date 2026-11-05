@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +20,11 @@ import (
 
 // defaultDirTTL 是 settings 不可用（如测试）时的目录缓存兜底时长。
 const defaultDirTTL = 30 * time.Minute
+
+const (
+	maxResolvedPathBytes = 4096
+	maxResolvedPathDepth = 64
+)
 
 // Service 跨驱动文件浏览；读走缓存，写后发 FileMutated。
 type Service struct {
@@ -96,6 +102,75 @@ func (s *Service) List(ctx context.Context, accountID int64, parentID string, fo
 		s.recordListHit(false)
 	}
 	return items, nil
+}
+
+// ResolvePath 从 rootID 开始逐层解析相对路径，目录读取复用 List 的缓存与 singleflight。
+func (s *Service) ResolvePath(ctx context.Context, accountID int64, rootID, relativePath string) (*domain.FileItem, error) {
+	if relativePath == "" || strings.HasPrefix(relativePath, "/") || path.Clean(relativePath) != relativePath {
+		return nil, domain.Errorf(domain.CodeValidation, "非法 STRM 相对路径")
+	}
+	if len(relativePath) > maxResolvedPathBytes {
+		return nil, domain.Errorf(domain.CodeValidation, "STRM 相对路径过长")
+	}
+
+	parentID := rootID
+	parts := strings.Split(relativePath, "/")
+	if len(parts) > maxResolvedPathDepth {
+		return nil, domain.Errorf(domain.CodeValidation, "STRM 路径层级过深")
+	}
+	for i, name := range parts {
+		if name == "" || name == "." || name == ".." || strings.ContainsRune(name, '\x00') {
+			return nil, domain.Errorf(domain.CodeValidation, "非法 STRM 相对路径")
+		}
+		items, err := s.List(ctx, accountID, parentID, false)
+		if err != nil {
+			return nil, err
+		}
+		matched, err := findPathItem(items, name)
+		if err != nil {
+			return nil, err
+		}
+		if matched == nil {
+			items, err = s.List(ctx, accountID, parentID, true)
+			if err != nil {
+				return nil, err
+			}
+			matched, err = findPathItem(items, name)
+			if err != nil {
+				return nil, err
+			}
+			if matched == nil {
+				return nil, domain.Errorf(domain.CodeNotFound, "路径不存在：%s", strings.Join(parts[:i+1], "/"))
+			}
+		}
+		if i < len(parts)-1 {
+			if !matched.IsDir {
+				return nil, domain.Errorf(domain.CodeNotFound, "路径不是目录：%s", strings.Join(parts[:i+1], "/"))
+			}
+			parentID = matched.ID
+			continue
+		}
+		if matched.IsDir {
+			return nil, domain.Errorf(domain.CodeValidation, "STRM 路径不能指向目录")
+		}
+		return matched, nil
+	}
+	return nil, domain.Errorf(domain.CodeNotFound, "文件不存在")
+}
+
+func findPathItem(items []domain.FileItem, name string) (*domain.FileItem, error) {
+	var matched *domain.FileItem
+	for i := range items {
+		if items[i].Name != name {
+			continue
+		}
+		if matched != nil {
+			return nil, domain.Errorf(domain.CodeValidation, "路径存在同名项目：%s", name)
+		}
+		item := items[i]
+		matched = &item
+	}
+	return matched, nil
 }
 
 func (s *Service) listFromDriver(ctx context.Context, accountID int64, parentID string) ([]domain.FileItem, error) {
@@ -373,7 +448,7 @@ func (s *Service) UploadLocal(ctx context.Context, accountID int64, req driver.L
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 			s.log.Debug("上传文件已取消", "account_id", accountID, "name", req.FileName)
 		} else {
-			s.log.Warn("上传文件失败", "account_id", accountID, "name", req.FileName, "err", err)
+			s.log.Warn("上传文件失败", "account_id", accountID, "name", req.FileName, "error", err.Error())
 		}
 		return nil, err
 	}

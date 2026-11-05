@@ -74,7 +74,6 @@ const (
 )
 
 const (
-	CleanupLocalNone          = ""
 	CleanupLocalFileOnSuccess = "file_on_success"
 	CleanupLocalPathOnSuccess = "path_on_success"
 	CleanupLocalTreeOnSuccess = "tree_on_success"
@@ -95,6 +94,59 @@ type taskState struct {
 	lastProgress   int
 	lastMessage    string
 	speed          speedsmoother.Tracker
+}
+
+func taskSourceType(sourceType string) string {
+	if sourceType == "" {
+		return SourceTypeManual
+	}
+	return sourceType
+}
+
+func taskPhase(sourceType, phase string) string {
+	if phase != "" {
+		return phase
+	}
+	if sourceType == SourceTypeCrossTransfer {
+		return PhaseDownloading
+	}
+	return PhaseUploading
+}
+
+func taskCleanupMode(sourceType, localPath, mode string) string {
+	if mode != "" || localPath == "" {
+		return mode
+	}
+	if sourceType == SourceTypeManual || sourceType == SourceTypeCrossTransfer {
+		return CleanupLocalFileOnSuccess
+	}
+	return ""
+}
+
+func isCrossTransferDownload(st *taskState) bool {
+	return st != nil && st.SourceType == SourceTypeCrossTransfer && st.Phase == PhaseDownloading
+}
+
+func isActiveUploadStatus(status string) bool {
+	return status == StatusPending || status == StatusRunning
+}
+
+func isResumableUploadStatus(status string) bool {
+	return status == StatusPaused || status == StatusFailed || status == StatusCanceled
+}
+
+func isCompletedUploadStatus(status string) bool {
+	return status == StatusSuccess || status == StatusSkipped
+}
+
+func pausedMessage(st *taskState) string {
+	if isCrossTransferDownload(st) {
+		return "源盘下载已暂停"
+	}
+	if st != nil && st.SourceType == SourceTypeCrossTransfer {
+		return "目标盘上传已暂停"
+	}
+	return "上传已暂停"
 }
 
 type CreateParams struct {

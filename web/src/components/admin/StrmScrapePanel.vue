@@ -48,6 +48,7 @@ import {
   hitTypeLabel,
   hitYear,
 } from "@/utils/tmdbHit";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const emit = defineEmits<{ "open-settings": [] }>();
 
@@ -216,12 +217,8 @@ async function toggleSearch() {
   }
 }
 
-const scrapedCount = computed(() => stats.value.ok);
-const missCount = computed(() => stats.value.miss);
-const doubtCount = computed(() => stats.value.doubt);
 const totalCount = computed(() => stats.value.total);
 const loadedCount = computed(() => items.value.length);
-const taskCount = computed(() => tasks.value.length);
 const running = computed(() => Boolean(progress.value?.running));
 const markingNormalId = ref("");
 const rescrapingId = ref("");
@@ -787,11 +784,7 @@ defineExpose({
   refresh: refreshAll,
   refreshing,
   running,
-  taskCount,
   totalCount,
-  scrapedCount,
-  missCount,
-  doubtCount,
 });
 </script>
 
@@ -883,7 +876,7 @@ defineExpose({
         </AppDropdown>
         <span class="scrape-tip scrape-tip--right">
           <AppIconButton
-            icon="fa-sync-alt"
+            icon="hand-sync-alt"
             label="刷新"
             variant="secondary"
             size="md"
@@ -895,7 +888,7 @@ defineExpose({
         </span>
         <span class="scrape-tip scrape-tip--right">
           <AppIconButton
-            icon="settings"
+            icon="hand-settings"
             label="STRM 刮削设置"
             variant="secondary"
             size="md"
@@ -924,7 +917,7 @@ defineExpose({
 
     <AdminEmptyState
       v-if="!loading && !tasks.length"
-      icon="🎬"
+      icon="hand-play"
       title="还没有 STRM 任务"
       description="请先在「STRM 任务」里创建任务，再回来刮削其输出目录。"
     />
@@ -1033,7 +1026,7 @@ defineExpose({
 
       <AdminEmptyState
         v-if="!items.length"
-        icon="🖼️"
+        icon="image"
         :title="totalCount === 0 && !hasActiveFilters ? '这个库还没有刮削结果' : '没有符合筛选的条目'"
         :description="
           totalCount === 0 && !hasActiveFilters
@@ -1078,21 +1071,19 @@ defineExpose({
                   :class="`scrape-card__mark--${item.status}`"
                   :title="statusMarkTitle(item)"
                 >
-                  <i
-                    class="fas"
-                    :class="{
-                      'fa-check': item.status === 'ok',
-                      'fa-minus': item.status === 'miss',
-                      'fa-exclamation': item.status === 'doubt',
-                    }"
-                  ></i>
+                  <SvgIcon
+                    size="1em"
+                    :name="
+                      item.status === 'ok' ? 'check' : item.status === 'miss' ? 'minus' : 'exclamation'
+                    "
+                  />
                 </span>
                 <span
                   v-if="item.tv_state === 'updating'"
                   class="scrape-card__updating"
                   title="追更中"
                 >
-                  <i class="fas fa-bolt"></i>
+                  <SvgIcon name="bolt" size="1em" />
                   追更
                 </span>
 
@@ -1111,7 +1102,7 @@ defineExpose({
                     :title="markingNormalId === item.id ? '处理中…' : '确认当前匹配'"
                     @click="confirmDoubt(item)"
                   >
-                    <i class="fas fa-check"></i>
+                    <SvgIcon name="check" size="1em" />
                     <span>{{ markingNormalId === item.id ? "…" : "确认" }}</span>
                   </button>
                   <button
@@ -1122,7 +1113,7 @@ defineExpose({
                     :title="markingNormalId === item.id ? '处理中…' : markActionLabel(item) === '完成' ? '标记完成' : '设为完结'"
                     @click="markEnded(item)"
                   >
-                    <i class="fas fa-flag-checkered"></i>
+                    <SvgIcon name="flag-checkered" size="1em" />
                     <span>{{ markingNormalId === item.id ? "…" : markActionLabel(item) }}</span>
                   </button>
                   <button
@@ -1133,7 +1124,7 @@ defineExpose({
                     :title="rescrapingId === item.id ? '处理中…' : '重新刮削'"
                     @click="rescrapeItem(item)"
                   >
-                    <i class="fas fa-rotate"></i>
+                    <SvgIcon name="rotate" size="1em" />
                     <span>{{ rescrapingId === item.id ? "…" : "重刮" }}</span>
                   </button>
                   <button
@@ -1143,7 +1134,7 @@ defineExpose({
                     title="重新匹配"
                     @click="openRematch(item)"
                   >
-                    <i class="fas fa-magnifying-glass"></i>
+                    <SvgIcon name="magnifying-glass" size="1em" />
                     <span>匹配</span>
                   </button>
                 </div>
@@ -1279,7 +1270,7 @@ defineExpose({
 .scrape-panel {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   overflow: hidden;
 }
@@ -1384,7 +1375,7 @@ defineExpose({
   padding: 5px 10px;
   background: #1e293b;
   color: #e2e8f0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   font-size: 12px;
   line-height: 1.4;
   white-space: nowrap;
@@ -1469,7 +1460,7 @@ defineExpose({
   max-width: min(240px, 40vw);
   padding: 4px 2px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--accent-text);
   font-size: 12px;
@@ -1617,7 +1608,7 @@ defineExpose({
   right: 8px;
   bottom: 1px;
   height: 2px;
-  border-radius: 1px;
+  border-radius: 2px;
   background: var(--brand-gradient-h);
 }
 .scrape-filter--inline.scrape-filter--active::after {
@@ -1673,7 +1664,7 @@ defineExpose({
   text-align: left;
   padding: 8px 10px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text);
   cursor: pointer;
@@ -1716,7 +1707,7 @@ defineExpose({
   will-change: transform;
 }
 .scrape-card {
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -1773,7 +1764,7 @@ defineExpose({
   z-index: 2;
   height: 22px;
   padding: 0 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -1784,7 +1775,7 @@ defineExpose({
   backdrop-filter: blur(6px);
   box-shadow: 0 4px 12px rgba(14, 165, 233, 0.28);
 }
-.scrape-card__updating i {
+.scrape-card__updating i, .scrape-card__updating .lp-svg-icon {
   font-size: 10px;
 }
 .scrape-card__busy {
@@ -1843,7 +1834,7 @@ defineExpose({
 .scrape-card__act {
   height: 32px;
   border: none;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -1858,12 +1849,12 @@ defineExpose({
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
   transition: background 0.15s ease, transform 0.15s ease;
 }
-.scrape-card__act i {
+.scrape-card__act i, .scrape-card__act .lp-svg-icon {
   font-size: 11px;
   opacity: 0.78;
 }
 .scrape-card__act:hover:not(:disabled) {
-  background: #fff;
+  background: var(--surface);
   transform: translateY(-1px);
 }
 .scrape-card__act:disabled {
@@ -1917,7 +1908,7 @@ defineExpose({
   gap: 6px;
   padding: 10px 12px;
   border: 1px solid var(--border-soft);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: linear-gradient(
     180deg,
     var(--tab-active-bg) 0%,
@@ -1965,7 +1956,7 @@ defineExpose({
   gap: 10px;
   text-align: left;
   padding: 8px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -1988,7 +1979,7 @@ defineExpose({
   width: 66px;
   flex: 0 0 66px;
   height: 99px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: var(--surface-sunken);
   overflow: hidden;
 }
@@ -2049,7 +2040,7 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
   background: var(--surface-sunken);
@@ -2104,7 +2095,7 @@ defineExpose({
   width: auto;
   height: auto;
   object-fit: contain;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
   cursor: default;
 }

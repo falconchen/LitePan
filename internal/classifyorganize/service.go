@@ -275,6 +275,8 @@ func findTemplate(cfg Config, kind string) (Template, bool) {
 func (s *Service) firstMatchingRule(ctx context.Context, state *evaluationState, rules []Rule) (Rule, bool, error) {
 	bestIndex := -1
 	bestValueIndex := -1
+	bestField := ""
+	var bestValues []string
 	for index, rule := range rules {
 		condition, err := parseCondition(rule.Condition)
 		if err != nil {
@@ -289,10 +291,15 @@ func (s *Service) firstMatchingRule(ctx context.Context, state *evaluationState,
 		}
 		bestIndex = index
 		bestValueIndex = valueIndex
+		bestField = condition.Field
+		bestValues = actual
 	}
 	if bestIndex < 0 {
 		return Rule{}, false, nil
 	}
+	// 证据记录"命中规则"的字段与取值，而不是循环最后一条被求值规则的残留。
+	state.evaluatedField = bestField
+	state.evaluatedValues = bestValues
 	return rules[bestIndex], true, nil
 }
 

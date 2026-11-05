@@ -262,6 +262,76 @@ func TestGroupSpiritedAwayDirs(t *testing.T) {
 	}
 }
 
+// 回归：自定义命名的「合集」容器目录不应被当成单部电影目录。
+// 否则目录内多部不同影片会被合并成一个作品，只匹配一次 TMDB，
+// 最终多条记录指向同一个目标名。
+func TestGroupCollectionContainerDirKeepsFilesSeparate(t *testing.T) {
+	coll := rules.Ancestor{ID: "d-coll", Name: "黑夜传说合集"}
+	p := newTestPlanner(nil, nil, "root-movie")
+	entries := []planner.BatchEntryForTest{
+		{Item: domain.FileItem{ID: "f1", Name: "黑夜传说.iso"}, Ancestors: []rules.Ancestor{coll}},
+		{Item: domain.FileItem{ID: "f2", Name: "黑夜传说2：进化.iso"}, Ancestors: []rules.Ancestor{coll}},
+		{Item: domain.FileItem{ID: "f3", Name: "黑夜传说3：狼族崛起.iso"}, Ancestors: []rules.Ancestor{coll}},
+	}
+	groups, skips := planner.GroupEntriesForTestExport(p, entries)
+	if len(skips) > 0 {
+		t.Fatalf("unexpected skips: %+v", skips)
+	}
+	if len(groups) != len(entries) {
+		t.Fatalf("合集目录内 %d 个不同影片应各自成组，实际 %d 组: %+v", len(entries), len(groups), groups)
+	}
+	for key, n := range groups {
+		if key.DirID != "" {
+			t.Fatalf("合集目录不应作为电影目录，实际 dirID=%q dirName=%q", key.DirID, key.DirName)
+		}
+		if n != 1 {
+			t.Fatalf("每组应只有 1 个文件，实际 title=%q count=%d", key.Title, n)
+		}
+	}
+}
+
+// 回归：rename 模式下，合集容器目录里的散落影片也要各自建好作品文件夹
+// （否则原地改名后仍不符合刮削结构）；同时合集目录只是多了子文件夹、
+// 并没有被搬空，不能给它生成清理动作。
+func TestRenamePlacesCollectionMoviesIntoWorkDirs(t *testing.T) {
+	fs := &mockFS{dirs: map[string][]domain.FileItem{
+		"root": {domain.FileItem{ID: "d-coll", Name: "黑夜传说合集", IsDir: true}},
+		"d-coll": {
+			domain.FileItem{ID: "c1", Name: "黑夜传说.iso"},
+			domain.FileItem{ID: "c2", Name: "黑夜传说2：进化.iso"},
+		},
+	}}
+	tmdb := &mockTMDB{searchFn: func(q string, _ *int) []map[string]any {
+		return []map[string]any{{"id": 100, "title": q, "release_date": "2003-01-01"}}
+	}}
+	p := newTestPlanner(fs, tmdb, "root")
+	plan, err := p.Build()
+	if err != nil {
+		t.Fatalf("build err %v", err)
+	}
+	workDirs := 0
+	relocated := 0
+	for _, a := range plan.Actions {
+		switch a.Kind {
+		case moplan.ActionKindEnsureDir:
+			if a.TargetParentID != "d-coll" {
+				t.Fatalf("作品文件夹应建在合集目录内，实际目标父目录 %q", a.TargetParentID)
+			}
+			workDirs++
+		case moplan.ActionKindRelocate:
+			relocated++
+		case moplan.ActionKindDeleteEmptyDir:
+			t.Fatalf("合集目录只是多了子文件夹、并未被搬空，不应生成清理动作: %+v", a)
+		}
+	}
+	if workDirs != 2 {
+		t.Fatalf("want 2 个作品文件夹，got %d", workDirs)
+	}
+	if relocated != 2 {
+		t.Fatalf("want 2 个文件移动动作，got %d", relocated)
+	}
+}
+
 func TestGroupAnZhanWithoutYear(t *testing.T) {
 	p := newTestPlanner(nil, nil, "root")
 	entries := []planner.BatchEntryForTest{{
@@ -345,6 +415,59 @@ func TestDetectSameWorkDirConflicts(t *testing.T) {
 		}
 	}
 	_ = hasDelete
+}
+
+func TestDetectSameWorkDirConflictsKeepsSeasonFolder(t *testing.T) {
+	p := newTestPlanner(nil, nil, "root")
+	p.SetScannedDirNames(map[string]string{"show2025": "我叫赵甲第 (2025)"})
+	p.SetActions([]moplan.PlanAction{
+		{
+			ID: "rename2022", Kind: moplan.ActionKindRelocate,
+			SourceID: "show2022", SourceName: "我叫赵甲第 (2022) {tmdb-196615}",
+			SourceParentID: "root", TargetParentID: "root",
+			TargetName: "我叫赵甲第 (2022) {tmdb-196615}",
+			Metadata:   map[string]any{"kind_label": "dir_rename"},
+		},
+		{
+			ID: "rename2025", Kind: moplan.ActionKindRelocate,
+			SourceID: "show2025", SourceName: "我叫赵甲第 (2025)",
+			SourceParentID: "root", TargetParentID: "root",
+			TargetName: "我叫赵甲第 (2022) {tmdb-196615}",
+			Metadata:   map[string]any{"kind_label": "dir_rename"},
+		},
+		{
+			ID: "season2", Kind: moplan.ActionKindEnsureDir,
+			TargetParentID: "show2025", TargetName: "Season 02",
+			Metadata: map[string]any{"is_season_dir": true, "season_index": 2},
+		},
+		{
+			ID: "episode2", Kind: moplan.ActionKindRelocate,
+			SourceID: "s02e01", SourceName: "我叫赵甲第2.2025.S02E01.mkv",
+			SourceParentID: "show2025", TargetParentID: "ref:season2",
+			TargetName: "我叫赵甲第 (2022) S02E01.mkv", DependsOn: []string{"season2"},
+		},
+	})
+
+	planner.DetectSameWorkDirConflicts(p)
+	actions := p.Actions()
+	if actions[1].Status != "skipped" {
+		t.Fatalf("2025 源目录应并入已命名的 2022 作品目录: %+v", actions[1])
+	}
+	if actions[2].TargetParentID != "show2022" || !containsString(actions[2].DependsOn, "rename2022") {
+		t.Fatalf("Season 02 应改挂到胜出作品目录并等待其重命名: %+v", actions[2])
+	}
+	if actions[3].TargetParentID != "ref:season2" {
+		t.Fatalf("第二季文件应保留 Season 02 目标层级: %+v", actions[3])
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTMDBAmbiguitySkipsGroup(t *testing.T) {
@@ -829,18 +952,18 @@ func TestRenamePlanAddsTMDBToStructuredMovieDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var dirRename *moplan.PlanAction
+	dirRenameIdx := -1
 	for i := range plan.Actions {
 		if plan.Actions[i].SourceID == "movie" {
-			dirRename = &plan.Actions[i]
+			dirRenameIdx = i
 			break
 		}
 	}
-	if dirRename == nil {
+	if dirRenameIdx < 0 {
 		t.Fatalf("want directory rename action to add tmdb id, actions=%+v skipped=%+v", plan.Actions, plan.Skipped)
 	}
-	if dirRename.TargetName != "千与千寻 (2001) {tmdb-129}" {
-		t.Fatalf("target dir = %q", dirRename.TargetName)
+	if got := plan.Actions[dirRenameIdx].TargetName; got != "千与千寻 (2001) {tmdb-129}" {
+		t.Fatalf("target dir = %q", got)
 	}
 }
 
@@ -1281,18 +1404,19 @@ func TestMovePlanSkipsAlreadyOrganizedTVFileWhenTargetExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fileAction *moplan.PlanAction
+	fileIdx := -1
 	for i := range plan.Actions {
 		if plan.Actions[i].SourceID == "ep01" {
-			fileAction = &plan.Actions[i]
+			fileIdx = i
 			break
 		}
 	}
-	if fileAction == nil {
+	if fileIdx < 0 {
 		t.Fatalf("expected file move action, actions=%+v", plan.Actions)
 	}
+	fileAction := plan.Actions[fileIdx]
 	if fileAction.Status != "skipped" {
-		t.Fatalf("expected target conflict skip, status=%q action=%+v", fileAction.Status, *fileAction)
+		t.Fatalf("expected target conflict skip, status=%q action=%+v", fileAction.Status, fileAction)
 	}
 	if !strings.Contains(fileAction.Error, "目标已存在同名") {
 		t.Fatalf("unexpected skip error: %q", fileAction.Error)
@@ -1343,21 +1467,22 @@ func TestMovePlanMarksOverwriteTargetWhenTargetExists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fileAction *moplan.PlanAction
+	fileIdx := -1
 	for i := range plan.Actions {
 		if plan.Actions[i].SourceID == "ep01" {
-			fileAction = &plan.Actions[i]
+			fileIdx = i
 			break
 		}
 	}
-	if fileAction == nil {
+	if fileIdx < 0 {
 		t.Fatalf("expected file move action, actions=%+v", plan.Actions)
 	}
+	fileAction := plan.Actions[fileIdx]
 	if fileAction.Status == "skipped" {
-		t.Fatalf("overwrite should keep action pending: %+v", *fileAction)
+		t.Fatalf("overwrite should keep action pending: %+v", fileAction)
 	}
 	if got := fmt.Sprint(fileAction.Metadata["_overwrite_target_id"]); got != "existing_ep01" {
-		t.Fatalf("overwrite target id = %q, want existing_ep01; action=%+v", got, *fileAction)
+		t.Fatalf("overwrite target id = %q, want existing_ep01; action=%+v", got, fileAction)
 	}
 }
 
@@ -1410,7 +1535,7 @@ func TestPromotedMovieMoveCreatesMoveAndRenameDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var promoted *moplan.PlanAction
+	promotedIdx := -1
 	for i := range plan.Actions {
 		a := &plan.Actions[i]
 		if a.Kind != moplan.ActionKindMoveAndRenameDir {
@@ -1418,13 +1543,14 @@ func TestPromotedMovieMoveCreatesMoveAndRenameDir(t *testing.T) {
 		}
 		flag, _ := a.Metadata["promoted_from_tv_tree"].(bool)
 		if flag {
-			promoted = a
+			promotedIdx = i
 			break
 		}
 	}
-	if promoted == nil {
+	if promotedIdx < 0 {
 		t.Fatalf("expected promoted move_and_rename_dir, actions=%+v", plan.Actions)
 	}
+	promoted := plan.Actions[promotedIdx]
 	if promoted.SourceID != "d_movie" {
 		t.Fatalf("source_id = %q, want d_movie", promoted.SourceID)
 	}

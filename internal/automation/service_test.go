@@ -15,6 +15,7 @@ import (
 	"litepan/internal/domain"
 	filesvc "litepan/internal/file"
 	"litepan/internal/mediaorganize"
+	"litepan/internal/mediaorganize/classification"
 	"litepan/internal/settings"
 	"litepan/internal/strm"
 	"litepan/internal/strmscrape"
@@ -39,11 +40,9 @@ func TestRefreshDirectoryClearsOnlyFollowingAccountDirectoryCaches(t *testing.T)
 		Strm:     strmSvc,
 	})
 
-	result := service.runCacheClear(context.Background(), map[string]any{
-		"_following_actions": []RuleAction{
-			{Type: domain.AutomationActionOrganize, Params: map[string]any{"task_id": "org-1"}},
-			{Type: domain.AutomationActionStrm, Params: map[string]any{"task_id": 10}},
-		},
+	result := service.executeAction(context.Background(), RuleAction{Type: domain.AutomationActionCacheClear}, []RuleAction{
+		{Type: domain.AutomationActionOrganize, Params: map[string]any{"task_id": "org-1"}},
+		{Type: domain.AutomationActionStrm, Params: map[string]any{"task_id": 10}},
 	})
 	if result["success"] != true || result["message"] != "已刷新 1 个账号的目录缓存" {
 		t.Fatalf("刷新结果异常: %#v", result)
@@ -182,6 +181,36 @@ func TestComputeNextRunIntervalUsesNextDayAnchorWhenTodayStartPassed(t *testing.
 	want = time.Date(2026, 7, 31, 13, 0, 0, 0, loc)
 	if !got.Equal(want) {
 		t.Fatalf("当日未到起点时 NextRunAt = %v, want %v", got, want)
+	}
+}
+
+func TestComputeNextRunAdvancedWeekly(t *testing.T) {
+	t.Parallel()
+	loc := time.FixedZone("UTC+8", 8*3600)
+	base := time.Date(2026, 9, 14, 12, 0, 0, 0, loc) // 周一
+	got := computeNextRun(domain.AutomationTriggerAdvanced, map[string]any{
+		"schedule_mode": "weekly",
+		"weekdays":      []any{float64(1), float64(3)},
+		"time":          "10:30",
+	}, base)
+	want := time.Date(2026, 9, 16, 10, 30, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("每周下次运行 = %v, want %v", got, want)
+	}
+}
+
+func TestComputeNextRunAdvancedMonthlySkipsMissingDay(t *testing.T) {
+	t.Parallel()
+	loc := time.FixedZone("UTC+8", 8*3600)
+	base := time.Date(2026, 1, 31, 12, 0, 0, 0, loc)
+	got := computeNextRun(domain.AutomationTriggerAdvanced, map[string]any{
+		"schedule_mode": "monthly",
+		"month_days":    []any{float64(31)},
+		"time":          "10:30",
+	}, base)
+	want := time.Date(2026, 3, 31, 10, 30, 0, 0, loc)
+	if !got.Equal(want) {
+		t.Fatalf("每月下次运行 = %v, want %v", got, want)
 	}
 }
 
@@ -331,7 +360,7 @@ func TestValidateRuleRequiresLibrarySelectionForEmbyLibraryMode(t *testing.T) {
 	if result.OK {
 		t.Fatalf("期望未选择媒体库时校验失败")
 	}
-	if len(result.Issues) == 0 || !strings.Contains(result.Issues[0].Message, "请选择 Emby 媒体库") {
+	if len(result.Issues) == 0 || !strings.Contains(result.Issues[0].Message, "请选择 Emby/Jellyfin 媒体库") {
 		t.Fatalf("issues=%#v", result.Issues)
 	}
 }
@@ -380,6 +409,12 @@ func TestEvaluateOrganizeAction(t *testing.T) {
 		riskTotal   int
 		messagePart string
 	}{
+		{
+			name:      "全部正常跳过不阻断",
+			summary:   map[string]any{"total": 67, "skipped": 67, "normal_skipped": 67},
+			completed: true, success: true, risk: 0, riskTotal: 0,
+			messagePart: "异常比例 0%",
+		},
 		{
 			name: "异常跳过未超过允许比例",
 			summary: map[string]any{
@@ -490,6 +525,59 @@ func TestValidateRuleChecksEveryOrganizeStrmCombination(t *testing.T) {
 	if len(result.Issues) == 0 || !strings.Contains(result.Issues[0].Message, "第 2 个整理动作") {
 		t.Fatalf("期望识别第二个整理动作不兼容，实际 issues=%#v", result.Issues)
 	}
+}
+
+func TestValidateRuleAcceptsClassifiedOrganizeTarget(t *testing.T) {
+	t.Parallel()
+
+	organizeSvc := mediaorganize.NewService(mediaorganize.ServiceOptions{
+		Repo: newMediaOrganizeTaskRepo(&domain.MediaOrganizeTask{
+			ID:        "org-tv",
+			TaskName:  "影视整理",
+			AccountID: 1,
+			Config: mustJSON(map[string]any{
+				"target_root": "/影视",
+				"action_type": "move",
+				"media_type":  "tv",
+			}),
+		}),
+		Classification: classificationRootStub{"tv": {"电视剧"}},
+	})
+	strmSvc := strm.NewService(strm.ServiceOptions{
+		Repo: newStrmTaskRepo(&domain.StrmTask{
+			ID:           10,
+			Name:         "电视剧 STRM",
+			AccountID:    1,
+			Path:         "/影视/电视剧",
+			ScheduleMode: domain.StrmScheduleWindow,
+			Status:       domain.StrmStatusActive,
+		}),
+	})
+	service := New(Options{
+		Rules:    newAutomationRuleRepo(),
+		Runs:     &automationRunRepo{},
+		Organize: organizeSvc,
+		Strm:     strmSvc,
+	})
+
+	result, err := service.ValidateRule(context.Background(), []RuleAction{
+		{ID: "organize", Type: domain.AutomationActionOrganize, Params: map[string]any{"task_id": "org-tv"}},
+		{ID: "strm", Type: domain.AutomationActionStrm, Params: map[string]any{"task_id": 10}},
+	})
+	if err != nil {
+		t.Fatalf("ValidateRule 返回错误: %v", err)
+	}
+	if !result.OK || len(result.Issues) != 0 {
+		t.Fatalf("分类实际落点已在 STRM 目录内，不应拦截: %#v", result)
+	}
+}
+
+type classificationRootStub map[string][]string
+
+var _ classification.RootDirectoryProvider = classificationRootStub{}
+
+func (s classificationRootStub) RootDirectories(mediaType string) []string {
+	return append([]string(nil), s[mediaType]...)
 }
 
 func TestCreateRuleRollsBackStrmScheduleModeWhenRuleCreateFails(t *testing.T) {

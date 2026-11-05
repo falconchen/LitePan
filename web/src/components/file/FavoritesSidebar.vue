@@ -152,7 +152,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
                   :disabled="items[0]?.id === item.id"
                   @click.stop="emit('move', item.id, -1)"
                 >
-                  <SvgIcon name="chevron-down" :size="12" class-name="favorites-sidebar__action-icon favorites-sidebar__action-icon--up" />
+                  <SvgIcon name="hand-chevron-down" :size="12" class-name="favorites-sidebar__action-icon favorites-sidebar__action-icon--up" />
                 </button>
                 <button
                   type="button"
@@ -162,7 +162,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
                   :disabled="items[items.length - 1]?.id === item.id"
                   @click.stop="emit('move', item.id, 1)"
                 >
-                  <SvgIcon name="chevron-down" :size="12" class-name="favorites-sidebar__action-icon" />
+                  <SvgIcon name="hand-chevron-down" :size="12" class-name="favorites-sidebar__action-icon" />
                 </button>
                 <button
                   type="button"
@@ -283,7 +283,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
 }
 
@@ -309,7 +309,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
   left: 50%;
   top: 50%;
   background: currentColor;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   transform: translate(-50%, -50%);
 }
 
@@ -386,7 +386,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
   content: "";
   position: absolute;
   inset: -4px -6px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   border: 1px dashed color-mix(in srgb, var(--brand) 44%, transparent);
   pointer-events: none;
 }
@@ -493,7 +493,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
   top: 50%;
   width: 9px;
   height: 1.2px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
   transform-origin: center;
 }
@@ -530,7 +530,7 @@ function handleDrop(event: DragEvent, item: BrowserFavoriteItem) {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
 }
 

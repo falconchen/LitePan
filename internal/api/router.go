@@ -29,6 +29,7 @@ import (
 	"litepan/internal/cache"
 	"litepan/internal/cacheretention"
 	"litepan/internal/classifyorganize"
+	"litepan/internal/cloudshare"
 	"litepan/internal/coverextract"
 	"litepan/internal/crosstransfer"
 	"litepan/internal/domain"
@@ -47,6 +48,7 @@ import (
 	"litepan/internal/share/dav"
 	"litepan/internal/spacecleanup"
 	"litepan/internal/strm"
+	"litepan/internal/strmdelete"
 	"litepan/internal/strmscrape"
 	"litepan/internal/upload"
 )
@@ -68,8 +70,10 @@ type Deps struct {
 	Favorites         *favorites.Service
 	Uploads           *upload.Manager
 	OfflineDownloads  *offlinedownload.Service
+	CloudShares       *cloudshare.Service
 	Playback          *playback.Service
 	Strm              *strm.Service
+	StrmDelete        *strmdelete.Service
 	CacheRetention    *cacheretention.Service
 	MediaOrganize     *mediaorganize.Service
 	AIOrganize        *aiorganize.Service
@@ -109,8 +113,10 @@ type Handler struct {
 	favorites         *favorites.Service
 	uploads           *upload.Manager
 	offlineDownloads  *offlinedownload.Service
+	cloudShares       *cloudshare.Service
 	playback          *playback.Service
 	strm              *strm.Service
+	strmDelete        *strmdelete.Service
 	cacheRetention    *cacheretention.Service
 	mediaOrganize     *mediaorganize.Service
 	aiOrganize        *aiorganize.Service
@@ -137,6 +143,7 @@ type Handler struct {
 
 	devMu       sync.Mutex
 	devUnlocked bool
+	slowLogs    slowRequestLogs
 }
 
 // NewRouter 装配并返回 HTTP 路由（含内嵌管理页面）。
@@ -158,8 +165,10 @@ func NewRouter(d Deps) http.Handler {
 		favorites:         d.Favorites,
 		uploads:           d.Uploads,
 		offlineDownloads:  d.OfflineDownloads,
+		cloudShares:       d.CloudShares,
 		playback:          d.Playback,
 		strm:              d.Strm,
+		strmDelete:        d.StrmDelete,
 		cacheRetention:    d.CacheRetention,
 		mediaOrganize:     d.MediaOrganize,
 		aiOrganize:        d.AIOrganize,
@@ -203,6 +212,10 @@ func NewRouter(d Deps) http.Handler {
 		r.Head("/strm/play/{account_id}/{file_key}/t/{token}/n/{filename}", h.strmPlay)
 		r.Get("/strm/play/{account_id}/{file_key}/t/{token}/n/{filename}/s/{signature}", h.strmPlay)
 		r.Head("/strm/play/{account_id}/{file_key}/t/{token}/n/{filename}/s/{signature}", h.strmPlay)
+		r.Get("/strm/path/{account_id}/{root_key}/{path_key}/t/{token}/n/{filename}", h.strmPathPlay)
+		r.Head("/strm/path/{account_id}/{root_key}/{path_key}/t/{token}/n/{filename}", h.strmPathPlay)
+		r.Get("/strm/path/{account_id}/{root_key}/{path_key}/t/{token}/n/{filename}/s/{signature}", h.strmPathPlay)
+		r.Head("/strm/path/{account_id}/{root_key}/{path_key}/t/{token}/n/{filename}/s/{signature}", h.strmPathPlay)
 		r.Route("/public", func(r chi.Router) {
 			r.Use(h.requirePublicOrAdmin)
 			r.Get("/accounts", h.publicAccounts)
@@ -221,6 +234,7 @@ func NewRouter(d Deps) http.Handler {
 				r.Post("/probe", h.crossTransferProbe)
 				r.Post("/execute", h.crossTransferExecute)
 				r.Post("/plain-enqueue", h.crossTransferPlainEnqueue)
+				r.Post("/plain-enqueue/stream", h.crossTransferPlainEnqueueStream)
 			})
 			r.Get("/logs", h.listLogs)
 			r.Get("/logs/stats", h.logStats)
@@ -243,6 +257,10 @@ func NewRouter(d Deps) http.Handler {
 					r.Delete("/{id}", h.deleteBackup)
 				})
 				r.Post("/update-credentials", h.adminUpdateCredentials)
+				r.Post("/two-factor/setup", h.adminBeginTwoFactorSetup)
+				r.Post("/two-factor/confirm", h.adminConfirmTwoFactorSetup)
+				r.Post("/two-factor/disable", h.adminDisableTwoFactor)
+				r.Post("/two-factor/recovery-codes", h.adminRegenerateTwoFactorRecoveryCodes)
 				r.Post("/webdav-config", h.adminWebDAVConfig)
 				r.Get("/emby/configs", h.listEmbyConfigs)
 				r.Put("/emby/configs", h.replaceEmbyConfigs)
@@ -252,11 +270,15 @@ func NewRouter(d Deps) http.Handler {
 				r.Get("/fnos/config", h.getFnosConfig)
 				r.Put("/fnos/config", h.updateFnosConfig)
 				r.Post("/fnos/test", h.testFnosConfig)
+				r.Put("/fnos/management", h.updateFnosManagement)
+				r.Post("/fnos/management/test", h.testFnosManagement)
+				r.Get("/fnos/libraries", h.listFnosLibraries)
 				r.Get("/local-fs/browse", h.browseLocalFS)
 				r.Get("/drivers", h.listDrivers)
 				r.Get("/dev/state", h.getDevState)
 				r.Post("/dev/unlock", h.unlockDevMode)
 				r.Get("/accounts", h.listAccounts)
+				r.Get("/overview", h.dashboardOverview)
 				r.Post("/accounts", h.createAccount)
 				r.Get("/accounts/{id}", h.getAccount)
 				r.Put("/accounts/{id}", h.updateAccount)
@@ -293,6 +315,7 @@ func NewRouter(d Deps) http.Handler {
 				})
 				r.Get("/notifications", h.listNotifications)
 				r.Get("/notifications/unread-count", h.notificationUnreadCount)
+				r.Get("/notifications/stream", h.streamNotificationUnread)
 				r.Post("/notifications/read-all", h.markAllNotificationsRead)
 				r.Delete("/notifications", h.deleteAllNotifications)
 				r.Post("/notifications/{id}/read", h.markNotificationRead)
@@ -324,6 +347,12 @@ func NewRouter(d Deps) http.Handler {
 					r.Get("/status", h.get115StrmToolStatus)
 					r.Post("/enabled", h.set115StrmToolEnabled)
 					r.Post("/cache/clear", h.clear115StrmDirCache)
+				})
+				r.Route("/tools/strm-delete", func(r chi.Router) {
+					r.Get("/config", h.getStrmDeleteTool)
+					r.Put("/config", h.updateStrmDeleteTool)
+					r.Post("/pending/{id}/confirm", h.confirmStrmDelete)
+					r.Post("/pending/{id}/cancel", h.cancelStrmDelete)
 				})
 				r.Route("/tools/local-upload", func(r chi.Router) {
 					r.Get("/config", h.getLocalUploadConfig)
@@ -482,6 +511,13 @@ func NewRouter(d Deps) http.Handler {
 					r.Post("/tasks/refresh", h.refreshOfflineDownloadTasks)
 					r.Post("/tasks/batch-delete", h.batchDeleteOfflineDownloadTasks)
 					r.Delete("/tasks/{taskID}", h.deleteOfflineDownloadTask)
+				})
+				r.Route("/shares", func(r chi.Router) {
+					r.Get("/capabilities", h.cloudShareCapabilities)
+					r.Get("/", h.listCloudShares)
+					r.Post("/", h.createCloudShare)
+					r.Put("/", h.updateCloudShares)
+					r.Post("/cancel", h.cancelCloudShares)
 				})
 			})
 		})

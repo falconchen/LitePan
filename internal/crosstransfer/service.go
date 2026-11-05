@@ -113,27 +113,8 @@ func sourceRootPrefix(displayPath string) string {
 	return cleaned[len(cleaned)-1] + "/"
 }
 
-func (s *Service) ScanSource(ctx context.Context, sourceAccountID int64, sourceParentID, methodID, sourceDisplayPath string) (*ScanResult, error) {
-	return s.ScanSources(ctx, sourceAccountID, []ScanRoot{{
-		ParentID:    sourceParentID,
-		DisplayPath: sourceDisplayPath,
-	}}, methodID)
-}
-
 func (s *Service) ScanSources(ctx context.Context, sourceAccountID int64, roots []ScanRoot, methodID string) (*ScanResult, error) {
 	return s.scanSources(ctx, sourceAccountID, roots, methodID, nil)
-}
-
-func (s *Service) ScanSourceStream(
-	ctx context.Context,
-	sourceAccountID int64,
-	sourceParentID, methodID, sourceDisplayPath string,
-	emit func(StreamEvent) error,
-) error {
-	return s.ScanSourcesStream(ctx, sourceAccountID, []ScanRoot{{
-		ParentID:    sourceParentID,
-		DisplayPath: sourceDisplayPath,
-	}}, methodID, emit)
 }
 
 func (s *Service) ScanSourcesStream(
@@ -412,12 +393,10 @@ func (s *Service) listScanBatch(ctx context.Context, accountID int64, nodes []*s
 	results := make([]scanDirResult, len(nodes))
 	var wg sync.WaitGroup
 	for i, node := range nodes {
-		wg.Add(1)
-		go func(i int, node *scanDirNode) {
-			defer wg.Done()
+		wg.Go(func() {
 			items, err := s.files.List(ctx, accountID, node.id, false)
 			results[i] = scanDirResult{node: node, items: items, err: err}
-		}(i, node)
+		})
 	}
 	wg.Wait()
 	return results
@@ -689,6 +668,7 @@ func (s *Service) ExecuteStream(ctx context.Context, in ExecuteInput, emit func(
 		duplicate = 2
 	}
 	dirCache := map[string]string{"": in.TargetParentID}
+	nameCache := make(map[string]map[string]struct{})
 	var dirCreated []createdTargetDir
 	keptDirs := map[string]struct{}{}
 	var results []map[string]any
@@ -718,6 +698,7 @@ func (s *Service) ExecuteStream(ctx context.Context, in ExecuteInput, emit func(
 			targetParentID:    in.TargetParentID,
 			dirCache:          dirCache,
 			dirCreated:        &dirCreated,
+			nameCache:         nameCache,
 			duplicate:         duplicate,
 			fallback:          in.Fallback,
 			sourceAccountID:   in.SourceAccountID,
@@ -767,6 +748,7 @@ type executeFileInput struct {
 	targetParentID    string
 	dirCache          map[string]string
 	dirCreated        *[]createdTargetDir
+	nameCache         map[string]map[string]struct{}
 	duplicate         int
 	fallback          bool
 	sourceAccountID   int64
@@ -794,7 +776,7 @@ func (s *Service) executeTransferFile(ctx context.Context, in executeFileInput) 
 		return transferItemResult(base, false, "error", "", err.Error())
 	}
 	if in.conflict == "skip" {
-		exists, err := s.targetFileExists(ctx, in.targetAccountID, folderID, f.Name)
+		exists, err := s.targetNameExists(ctx, in.targetAccountID, folderID, f.Name, in.nameCache)
 		if err != nil {
 			s.log.Warn("跨盘秒传检查目标同名失败", "name", f.Name, "err", err)
 			if in.fallback {
@@ -826,6 +808,7 @@ func (s *Service) executeTransferFile(ctx context.Context, in executeFileInput) 
 		return transferItemResult(base, false, "error", "", rapidErr)
 	}
 	if reuse {
+		rememberTargetName(in.nameCache, folderID, f.Name)
 		if s.files != nil {
 			s.files.NotifyCreated(ctx, in.targetAccountID, folderID, fileID, f.Name, f.Size, false)
 		}
@@ -854,18 +837,11 @@ func (s *Service) fallbackTransferResult(ctx context.Context, in executeFileInpu
 
 func (s *Service) enqueueRelayTask(ctx context.Context, in executeFileInput) error {
 	f := in.file
-	if s.uploads == nil {
-		return domain.Errorf(domain.CodeInternal, "上传服务未就绪")
-	}
-	if strings.TrimSpace(f.SourceFileID) == "" {
-		return domain.Errorf(domain.CodeValidation, "源文件缺少 file_id，无法执行兜底传输")
-	}
-	_, err := s.uploads.Create(ctx, upload.CreateParams{
+	_, err := s.enqueueRelay(ctx, upload.CreateParams{
 		AccountID:         in.targetAccountID,
 		AccountName:       in.targetAccountName,
 		DriverType:        in.targetDriverType,
 		FileName:          f.Name,
-		SourceType:        upload.SourceTypeCrossTransfer,
 		SourceAccountID:   in.sourceAccountID,
 		SourceAccountName: in.sourceAccountName,
 		SourceDriverType:  in.sourceDriverType,
@@ -876,9 +852,20 @@ func (s *Service) enqueueRelayTask(ctx context.Context, in executeFileInput) err
 		TargetDisplayPath: in.targetDisplayPath,
 		TotalBytes:        f.Size,
 		ConflictPolicy:    in.conflict,
-		Phase:             upload.PhaseDownloading,
 	})
 	return err
+}
+
+func (s *Service) enqueueRelay(ctx context.Context, params upload.CreateParams) (*upload.Task, error) {
+	if s.uploads == nil {
+		return nil, domain.Errorf(domain.CodeInternal, "上传服务未就绪")
+	}
+	if strings.TrimSpace(params.SourceFileID) == "" {
+		return nil, domain.Errorf(domain.CodeValidation, "源文件缺少 file_id，无法执行兜底传输")
+	}
+	params.SourceType = upload.SourceTypeCrossTransfer
+	params.Phase = upload.PhaseDownloading
+	return s.uploads.Create(ctx, params)
 }
 
 func normalizeConflictPolicy(policy string) string {
@@ -888,19 +875,6 @@ func normalizeConflictPolicy(policy string) string {
 	default:
 		return "skip"
 	}
-}
-
-func (s *Service) targetFileExists(ctx context.Context, accountID int64, parentID, name string) (bool, error) {
-	items, err := s.files.List(ctx, accountID, parentID, false)
-	if err != nil {
-		return false, err
-	}
-	for _, item := range items {
-		if item.Name == name {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func transferItemResult(base map[string]any, success bool, mode, fileID, errMsg string) map[string]any {

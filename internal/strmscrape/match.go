@@ -20,9 +20,19 @@ type tmdbInfo struct {
 	Year         *int
 	Plot         string
 	PosterPath   string
+	BackdropPath string
+	Actors       []tmdbActor
+	LogoPath     string
 	MediaType    string
 	Doubt        bool
 	EpisodeCount int // 默认全剧集数；刮削时会按本地已有季收窄
+}
+
+type tmdbActor struct {
+	Name        string
+	Role        string
+	ProfilePath string
+	Order       int
 }
 
 func (s *Service) matchWork(ctx context.Context, client *tmdb.Client, g workGroup) (*tmdbInfo, error) {
@@ -34,6 +44,11 @@ func (s *Service) matchWork(ctx context.Context, client *tmdb.Client, g workGrou
 	for _, e := range g.entries {
 		stem := strings.TrimSuffix(filepath.Base(e.absPath), filepath.Ext(e.absPath))
 		fileParses = append(fileParses, rules.NormalizeParsedMedia(rules.ParseFilenameStrict(stem+".mkv")))
+	}
+	if meta, ok := readWorkNFOMeta(g, mediaType); ok && strings.TrimSpace(meta.TMDBID) != "" {
+		if info, err := lookupTMDBInfo(ctx, client, meta.TMDBID, mediaType); err == nil {
+			return info, nil
+		}
 	}
 
 	if id := rules.FindTMDBIDInName(folderName); id != "" {
@@ -163,18 +178,28 @@ func pickTMDBScrapeMatch(results []map[string]any, year *int, mediaType, title s
 }
 
 func (s *Service) writeMatched(ctx context.Context, client *tmdb.Client, g workGroup, info tmdbInfo, overwrite bool) error {
-	_, err := s.writeMatchedOpts(ctx, client, g, info, overwrite, true)
+	_, err := s.writeMatchedOpts(ctx, client, g, info, overwrite, s.GetSettings().EpisodeInfo)
 	return err
 }
 
 func (s *Service) writeMatchedOpts(ctx context.Context, client *tmdb.Client, g workGroup, info tmdbInfo, overwrite, withTVExtras bool) (epTMDB int, err error) {
+	cfg := s.GetSettings()
 	mediaType := info.MediaType
 	if mediaType == "" {
 		mediaType = inferMediaType(g)
 		info.MediaType = mediaType
 	}
-	epTMDB = info.EpisodeCount
-	if mediaType == MediaTypeTV && g.flatFile == "" && strings.TrimSpace(info.TMDBID) != "" {
+	if cfg.Fanart || cfg.Actors || cfg.ClearLogo {
+		info, err = enrichTMDBExtras(ctx, client, info, cfg)
+		if err != nil {
+			return 0, err
+		}
+	}
+	epTMDB = 0
+	if withTVExtras {
+		epTMDB = info.EpisodeCount
+	}
+	if withTVExtras && mediaType == MediaTypeTV && g.flatFile == "" && strings.TrimSpace(info.TMDBID) != "" {
 		if n, cerr := tmdbEpisodeCountForLocalSeasons(ctx, client, g, info.TMDBID); cerr == nil && n > 0 {
 			epTMDB = n
 		}
@@ -187,23 +212,44 @@ func (s *Service) writeMatchedOpts(ctx context.Context, client *tmdb.Client, g w
 	}); err != nil {
 		return 0, err
 	}
-	needTVExtras := mediaType == MediaTypeTV && g.flatFile == "" && strings.TrimSpace(info.TMDBID) != ""
+	needTVExtras := withTVExtras && mediaType == MediaTypeTV && g.flatFile == "" && strings.TrimSpace(info.TMDBID) != ""
 	nfo, poster := workMetaPaths(g, mediaType)
-	if overwrite || !fileExists(nfo) {
+	actors := buildNFOActors(client, info.Actors)
+	actorSkipped := false
+	// 目标 NFO 不存在或不是标准 NFO（如压制组信息文件）都重写；后者直接覆盖。
+	if nfoWriteNeeded(overwrite, nfo) {
 		if mediaType == MediaTypeTV {
-			if err := writeTVShowNFO(nfo, info.Title, info.TMDBID, info.Plot, info.Year); err != nil {
+			if err := writeTVShowNFO(nfo, info.Title, info.TMDBID, info.Plot, info.Year, actors...); err != nil {
 				return 0, err
 			}
-		} else if err := writeMovieNFO(nfo, info.Title, info.TMDBID, info.Plot, info.Year); err != nil {
+		} else if err := writeMovieNFO(nfo, info.Title, info.TMDBID, info.Plot, info.Year, actors...); err != nil {
 			return 0, err
+		}
+	} else if cfg.Actors {
+		// 补写演员是可选项：NFO 结构异常时只警告跳过，不能中断整部作品（否则海报/背景图/Logo 也写不成）。
+		if err := appendNFOActors(nfo, actors); err != nil {
+			actorSkipped = true
+			if s.log != nil {
+				s.log.Warn("STRM 刮削补写演员信息失败，已跳过", "nfo", nfo, "err", err)
+			}
 		}
 	}
 	if (overwrite || !fileExists(poster)) && strings.TrimSpace(info.PosterPath) != "" {
-		data, err := client.DownloadImage(ctx, info.PosterPath, "w500")
+		data, err := client.DownloadImage(ctx, info.PosterPath, "original")
 		if err != nil {
 			return 0, err
 		}
 		if err := writeImageFile(poster, data); err != nil {
+			return 0, err
+		}
+	}
+	if cfg.Fanart && (overwrite || !workHasFanart(g)) && strings.TrimSpace(info.BackdropPath) != "" {
+		if _, err := s.writeOptionalArtwork(ctx, client, info.BackdropPath, "original", workFanartPath(g), "详情页背景图"); err != nil {
+			return 0, err
+		}
+	}
+	if cfg.ClearLogo && (overwrite || !workHasClearLogo(g)) && strings.TrimSpace(info.LogoPath) != "" {
+		if _, err := s.writeOptionalArtwork(ctx, client, info.LogoPath, "original", workClearLogoPath(g), "影片 Logo"); err != nil {
 			return 0, err
 		}
 	}
@@ -213,11 +259,144 @@ func (s *Service) writeMatchedOpts(ctx context.Context, client *tmdb.Client, g w
 		}
 	}
 	// 异步补季/集时由调用方 finalize；此处同步路径直接收尾
-	if withTVExtras || !needTVExtras {
+	if !withTVExtras {
+		if info.Doubt {
+			_ = writePendingState(g, scrapeState{Status: PendingDoubt})
+		} else {
+			clearPendingMarker(g)
+		}
+	} else if withTVExtras || !needTVExtras {
 		finalizeAfterScrape(g, mediaType, epTMDB, info.Doubt)
 	}
+	// 记录本次 TMDB 是否根本没有可选资源，避免下一轮再次为同一部作品发请求。
+	syncOptionalAssetState(g, cfg, info, actorSkipped)
 	clearManualComplete(g)
 	return epTMDB, nil
+}
+
+func enrichTMDBExtras(ctx context.Context, client *tmdb.Client, info tmdbInfo, cfg Settings) (tmdbInfo, error) {
+	appendTo := []string{}
+	if cfg.Actors {
+		if info.MediaType == MediaTypeTV {
+			appendTo = append(appendTo, "aggregate_credits")
+		} else {
+			appendTo = append(appendTo, "credits")
+		}
+	}
+	raw, err := client.LookupWithAppend(ctx, info.TMDBID, info.MediaType, appendTo...)
+	if err != nil {
+		return info, fmt.Errorf("获取 TMDB 扩展信息：%w", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return info, fmt.Errorf("解析 TMDB 扩展信息：%w", err)
+	}
+	if cfg.Fanart {
+		info.BackdropPath = strings.TrimSpace(anyString(payload["backdrop_path"]))
+	}
+	if cfg.Actors {
+		creditsKey := "credits"
+		if info.MediaType == MediaTypeTV {
+			creditsKey = "aggregate_credits"
+		}
+		info.Actors = decodeTMDBActors(payload[creditsKey], 20)
+	}
+	if cfg.ClearLogo {
+		images, imageErr := client.FetchImages(ctx, info.TMDBID, info.MediaType)
+		if imageErr != nil {
+			return info, fmt.Errorf("获取 TMDB Logo：%w", imageErr)
+		}
+		info.LogoPath = selectTMDBLogo(images, cfg.TmdbLanguage, anyString(payload["original_language"]))
+	}
+	return info, nil
+}
+
+func selectTMDBLogo(raw json.RawMessage, preferred, original string) string {
+	var payload struct {
+		Logos []struct {
+			FilePath string  `json:"file_path"`
+			Language *string `json:"iso_639_1"`
+		} `json:"logos"`
+	}
+	if json.Unmarshal(raw, &payload) != nil {
+		return ""
+	}
+	language := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if i := strings.IndexAny(value, "-_"); i >= 0 {
+			value = value[:i]
+		}
+		return value
+	}
+	wantedLanguages := make([]string, 0, 4)
+	seenLanguages := map[string]bool{}
+	for _, value := range []string{language(preferred), language(original), "en"} {
+		if value == "" || seenLanguages[value] {
+			continue
+		}
+		seenLanguages[value] = true
+		wantedLanguages = append(wantedLanguages, value)
+	}
+	for _, wanted := range append(wantedLanguages, "") {
+		for _, logo := range payload.Logos {
+			actual := ""
+			if logo.Language != nil {
+				actual = language(*logo.Language)
+			}
+			path := strings.TrimSpace(logo.FilePath)
+			if actual == wanted && strings.EqualFold(filepath.Ext(path), ".png") {
+				return path
+			}
+		}
+	}
+	for _, logo := range payload.Logos {
+		path := strings.TrimSpace(logo.FilePath)
+		if strings.EqualFold(filepath.Ext(path), ".png") {
+			return path
+		}
+	}
+	return ""
+}
+
+func decodeTMDBActors(raw any, limit int) []tmdbActor {
+	credits, _ := raw.(map[string]any)
+	cast, _ := credits["cast"].([]any)
+	if limit <= 0 || limit > len(cast) {
+		limit = len(cast)
+	}
+	out := make([]tmdbActor, 0, limit)
+	for _, value := range cast {
+		item, _ := value.(map[string]any)
+		name := strings.TrimSpace(anyString(item["name"]))
+		if name == "" {
+			continue
+		}
+		role := strings.TrimSpace(anyString(item["character"]))
+		if role == "" {
+			if roles, _ := item["roles"].([]any); len(roles) > 0 {
+				if first, _ := roles[0].(map[string]any); first != nil {
+					role = strings.TrimSpace(anyString(first["character"]))
+				}
+			}
+		}
+		order := len(out)
+		if parsed := asInt(item["order"]); parsed != nil {
+			order = *parsed
+		}
+		out = append(out, tmdbActor{Name: name, Role: role, ProfilePath: strings.TrimSpace(anyString(item["profile_path"])), Order: order})
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
+}
+
+func buildNFOActors(client *tmdb.Client, actors []tmdbActor) []nfoActor {
+	out := make([]nfoActor, 0, len(actors))
+	for _, actor := range actors {
+		out = append(out, nfoActor{Name: actor.Name, Role: actor.Role, Order: actor.Order, Thumb: client.ImageURL(actor.ProfilePath, "h632")})
+	}
+	return out
 }
 
 // tmdbEpisodeCountForLocalSeasons 按 finale 截断正片季，避免跨季绝对集号被误当总集数。
@@ -266,17 +445,6 @@ func tmdbSeasonEpisodeCountMap(rawSeasons []json.RawMessage) map[int]int {
 	return out
 }
 
-func sumTMDBSeasonEpisodeCounts(rawSeasons []json.RawMessage, seasons []int) int {
-	counts := tmdbSeasonEpisodeCountMap(rawSeasons)
-	total := 0
-	for _, sn := range seasons {
-		if sn > 0 {
-			total += counts[sn]
-		}
-	}
-	return total
-}
-
 // effectiveSeasonEpisodeCount 有 finale 时按集列表计数，否则保留 episode_count。
 func effectiveSeasonEpisodeCount(detail *tmdbSeasonDetail, fallback int) int {
 	fin := finaleEpisodeNumber(detail)
@@ -311,9 +479,9 @@ func finaleEpisodeNumber(detail *tmdbSeasonDetail) int {
 	return best
 }
 
-func (s *Service) writeSeasonPosters(ctx context.Context, client *tmdb.Client, g workGroup, tmdbID string, overwrite bool) error {
+func (s *Service) writeSeasonPosters(ctx context.Context, client *tmdb.Client, g workGroup, tmdbID string, overwrite bool, seasonDirs []seasonDir) error {
 	showDir := g.absDir
-	seasons := listLocalSeasonNumbers(showDir)
+	seasons := seasonNumbersFromDirs(seasonDirs)
 	if len(seasons) == 0 {
 		return nil
 	}
@@ -346,7 +514,7 @@ func (s *Service) writeSeasonPosters(ctx context.Context, client *tmdb.Client, g
 		if !overwrite && fileExists(out) {
 			continue
 		}
-		if _, err := s.writeOptionalArtwork(ctx, client, posterPath, out, fmt.Sprintf("第 %d 季海报", season)); err != nil {
+		if _, err := s.writeOptionalArtwork(ctx, client, posterPath, "original", out, fmt.Sprintf("第 %d 季海报", season)); err != nil {
 			return err
 		}
 	}
@@ -389,6 +557,7 @@ func decodeTMDBInfo(raw json.RawMessage, mediaType string) (tmdbInfo, error) {
 	id, title, original, year := rules.ExtractTMDBDisplayFields(m, mediaType)
 	plot := strings.TrimSpace(anyString(m["overview"]))
 	poster := strings.TrimSpace(anyString(m["poster_path"]))
+	backdrop := strings.TrimSpace(anyString(m["backdrop_path"]))
 	if id == "" || title == "" {
 		return tmdbInfo{}, fmt.Errorf("TMDB 结果缺少标题")
 	}
@@ -403,6 +572,7 @@ func decodeTMDBInfo(raw json.RawMessage, mediaType string) (tmdbInfo, error) {
 		Year:         year,
 		Plot:         plot,
 		PosterPath:   poster,
+		BackdropPath: backdrop,
 		MediaType:    mediaType,
 		EpisodeCount: epCount,
 	}, nil

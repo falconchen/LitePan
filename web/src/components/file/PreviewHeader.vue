@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 defineProps<{
   fileName?: string;
   status?: string;
@@ -14,7 +15,7 @@ const emit = defineEmits<{
 <template>
   <header class="preview-header">
     <button type="button" class="preview-header__back" @click="emit('close')">
-      <i class="fa-solid fa-arrow-left" aria-hidden="true" />
+      <SvgIcon name="arrow-left" size="1em" />
       <span>返回文件</span>
     </button>
 
@@ -35,9 +36,7 @@ const emit = defineEmits<{
         </svg>
       </button>
       <button type="button" aria-label="关闭预览" title="关闭" @click="emit('close')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M5 5l14 14M19 5 5 19" />
-        </svg>
+        <SvgIcon name="xmark" :size="14" />
       </button>
     </div>
   </header>
@@ -73,7 +72,7 @@ const emit = defineEmits<{
   gap: 10px;
   width: max-content;
   padding: 9px 13px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgb(255 255 255 / 5%) !important;
   font-size: 15px;
   font-weight: 650;
@@ -120,7 +119,7 @@ const emit = defineEmits<{
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 
 .preview-header__actions svg {

@@ -12,14 +12,12 @@ const (
 	HashMD5  HashType = "md5"
 )
 
-
 type IDKind uint8
 
 const (
 	IDStable IDKind = iota
 	IDPath
 )
-
 
 type FileItem struct {
 	ID      string
@@ -32,14 +30,12 @@ type FileItem struct {
 	IDKind  IDKind
 }
 
-
 type DownloadMode uint8
 
 const (
 	DownloadRedirect DownloadMode = iota
 	DownloadProxy
 )
-
 
 type UpstreamTransportPolicy uint8
 
@@ -48,7 +44,6 @@ const (
 	UpstreamTransportForceHTTP2
 )
 
-
 type DownloadInfo struct {
 	URL         string
 	Headers     http.Header
@@ -56,8 +51,11 @@ type DownloadInfo struct {
 	Expiration  time.Duration
 	Concurrency int
 	ChunkSize   int64
-	ForceProxy  bool
-	TransportPolicy UpstreamTransportPolicy
+	// Transfer 参数仅用于完整文件传输；未声明时分别沿用 ChunkSize 和 Concurrency。
+	TransferChunkSize   int64
+	TransferConcurrency int
+	ForceProxy          bool
+	TransportPolicy     UpstreamTransportPolicy
 	// LocalPath 非空时表示内容在本机文件，播放层直接读盘，无需上游 HTTP。
 	LocalPath string
 

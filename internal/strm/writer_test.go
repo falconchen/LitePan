@@ -185,11 +185,11 @@ func TestMetadataSyncerMigratesAlignedISOFileWithoutDownload(t *testing.T) {
 	}
 
 	item := metadataItem{relPath: "影音库/电影/电影.iso.nfo", legacyRelPath: legacyRelPath}
-	created, err := (&metadataSyncer{}).syncOne(t.Context(), nil, 1, root, item)
+	migrated, err := migrateLegacyMetadata(root, item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !created {
+	if !migrated {
 		t.Fatal("expected local metadata migration")
 	}
 	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {

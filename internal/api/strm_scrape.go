@@ -29,6 +29,15 @@ func parseInt(raw string) int {
 	return v
 }
 
+// strmTaskIDQuery 统一解析并校验 strm_task_id 参数。
+func strmTaskIDQuery(r *http.Request) (int64, error) {
+	taskID, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("strm_task_id")), 10, 64)
+	if err != nil || taskID <= 0 {
+		return 0, domain.Errorf(domain.CodeValidation, "strm_task_id 无效")
+	}
+	return taskID, nil
+}
+
 func (h *Handler) getStrmScrapeSettings(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.strmScrape != nil) {
 		return
@@ -60,9 +69,9 @@ func (h *Handler) getStrmScrapeScope(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.strmScrape != nil) {
 		return
 	}
-	taskID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("strm_task_id")), 10, 64)
-	if taskID <= 0 {
-		writeErr(w, domain.Errorf(domain.CodeValidation, "strm_task_id 无效"))
+	taskID, err := strmTaskIDQuery(r)
+	if err != nil {
+		writeErr(w, err)
 		return
 	}
 	writeOK(w, h.strmScrape.GetScope(taskID))
@@ -89,7 +98,11 @@ func (h *Handler) listStrmScrapeScopeDirectories(w http.ResponseWriter, r *http.
 	if !ensureServiceReady(w, h.strmScrape != nil) {
 		return
 	}
-	taskID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("strm_task_id")), 10, 64)
+	taskID, err := strmTaskIDQuery(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	dirs, err := h.strmScrape.ListScopeDirectories(r.Context(), taskID, r.URL.Query().Get("parent"))
 	if err != nil {
 		writeErr(w, err)
@@ -133,7 +146,11 @@ func (h *Handler) listStrmScrapeItems(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.strmScrape != nil) {
 		return
 	}
-	taskID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("strm_task_id")), 10, 64)
+	taskID, err := strmTaskIDQuery(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	items, err := h.strmScrape.ListItems(r.Context(), taskID, parseStrmScrapeListQuery(r))
 	if err != nil {
 		writeErr(w, err)
@@ -239,7 +256,11 @@ func (h *Handler) getStrmScrapePoster(w http.ResponseWriter, r *http.Request) {
 	if !ensureServiceReady(w, h.strmScrape != nil) {
 		return
 	}
-	taskID, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("strm_task_id")), 10, 64)
+	taskID, err := strmTaskIDQuery(r)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
 	rel := strings.TrimSpace(r.URL.Query().Get("rel"))
 	path, err := h.strmScrape.ResolvePosterFile(r.Context(), taskID, rel)
 	if err != nil {

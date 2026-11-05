@@ -109,6 +109,11 @@ Put "https://<bucket>.oss-cn-shenzhen.aliyuncs.com/...":
 `ResponseHeaderTimeout` 兜底，取消交给 `context`。传输时长本来就取决于文件
 大小和链路速度，给它设总超时在慢链路上必然误杀。
 
+> 上游 v0.5.7 也给 OSS 上传拆出了独立客户端（默认 HTTP/1.1，等响应头 60 秒）。
+> 本 Fork 沿用上游的客户端构造，但把等响应头的上限放宽到 10 分钟：合并分片会
+> 触发 115 回调按 SHA1 校验整个文件，大文件 60 秒不一定等得到；分片初始化、合并
+> 等直接面向 OSS 的请求也一并走这个客户端。分片重试同样保留本 Fork 的实现。
+
 ### 2. 分片阈值与分片大小改为按账号可配置
 
 上游是编译期常量（单片上限 512 MiB、分片 20 MiB）。本 Fork 在 115_Open 的账号
@@ -253,7 +258,7 @@ services:
 第三方依赖见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。请遵守各网盘服务条款与当地法规。
 
 [docker-pulls-shield]: https://img.shields.io/docker/pulls/falconchen/litepan?logo=docker&logoColor=white&style=flat-square
-[version-shield]: https://img.shields.io/badge/基于上游-v0.5.4--Beta-6C63FF?style=flat-square
+[version-shield]: https://img.shields.io/badge/基于上游-v0.5.7--Beta-6C63FF?style=flat-square
 [license-shield]: https://img.shields.io/badge/License-PolyForm%20NC-red?style=flat-square
 [docker-url]: https://hub.docker.com/r/falconchen/litepan
 [upstream-url]: https://github.com/Ponphil/LitePan

@@ -10,13 +10,13 @@
 
 .menu-panel--comfortable {
   padding: 6px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
 }
 
 .menu-panel--context {
   min-width: 156px;
   padding: 8px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   border-color: var(--border);
   background: color-mix(in srgb, var(--surface) 96%, transparent);
   backdrop-filter: blur(12px);
@@ -51,7 +51,7 @@
 .menu-panel--context .menu-panel__item {
   height: 36px;
   padding: 0 20px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   color: var(--text-regular);
 }

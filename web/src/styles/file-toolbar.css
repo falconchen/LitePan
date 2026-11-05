@@ -183,20 +183,8 @@
   transition: transform 0.2s ease;
 }
 
-.file-toolbar__menu-arrow--muted {
-  color: var(--text-regular);
-}
-
 .file-toolbar__menu-arrow.open {
   transform: rotate(180deg);
-}
-
-.file-toolbar__batch {
-  display: flex;
-  gap: 10px;
-  margin-left: 20px;
-  padding-left: 20px;
-  border-left: 1px solid var(--border);
 }
 
 .file-toolbar .performance-panel {
@@ -236,7 +224,7 @@
 }
 
 .file-toolbar .performance-value {
-  color: #334155;
+  color: var(--text);
   font-weight: 500;
 }
 
@@ -295,7 +283,7 @@
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -324,7 +312,7 @@
   position: absolute;
   inset: 1px 0 auto 0;
   height: 3px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
   box-shadow: 0 5px 0 currentColor, 0 10px 0 currentColor;
 }
@@ -382,12 +370,6 @@
   .file-toolbar .transfer-status-chip {
     margin-right: auto;
     max-width: min(220px, 52vw);
-  }
-
-  .file-toolbar__batch {
-    margin-left: 0;
-    padding-left: 0;
-    border-left: none;
   }
 
   .file-toolbar .performance-panel.expanded {
@@ -500,7 +482,7 @@
   gap: 8px;
   padding: 0 14px 0 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text-muted);
   cursor: pointer;

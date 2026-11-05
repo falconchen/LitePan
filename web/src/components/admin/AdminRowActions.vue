@@ -142,7 +142,7 @@ onBeforeUnmount(() => {
 .admin-row-actions__trigger span {
   width: 4px;
   height: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: currentColor;
 }
 

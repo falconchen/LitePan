@@ -7,9 +7,14 @@ import (
 	"litepan/internal/settings"
 )
 
-func (h *Handler) getSettings(w http.ResponseWriter, _ *http.Request) {
+func (h *Handler) getSettings(w http.ResponseWriter, r *http.Request) {
 	if h.settings == nil {
 		writeOK(w, map[string]any{"categories": nil, "items": nil})
+		return
+	}
+	// include_hidden=1：连带返回 Hidden 键（界面偏好等），敏感值仍打码。
+	if r.URL.Query().Get("include_hidden") == "1" {
+		writeOK(w, h.settings.SnapshotAll())
 		return
 	}
 	writeOK(w, h.settings.Snapshot())

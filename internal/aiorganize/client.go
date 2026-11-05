@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,13 +15,27 @@ import (
 	"litepan/internal/httpx"
 )
 
-const recognitionSystemPrompt = `你是媒体文件识别助手。输入是内置规则无法稳定识别的多个作品组。
-只能根据输入中已有的 work_id、目录名、文件名和候选信息判断，不得虚构文件。
-只返回 JSON 对象，格式为：
-{"items":[{"work_id":"work_1","recognized":true,"title":"中文或常用标题","original_title":"可选原名","year":2024,"media_type":"movie|tv","season":1,"files":[{"source_id":"source_1","episode":1,"kind":"episode|movie|extra"}]}]}
-每个 work_id 最多返回一次。无法稳定判断时返回 recognized=false，不要猜。不要返回目标目录、TMDB ID、置信度、文件新名或任何操作。`
+const modelRequestTimeout = 120 * time.Second
 
-const recognitionRepairPrompt = `将下面内容修正为严格 JSON。只返回一个对象，顶层只有 items 数组。items 中只允许 work_id、recognized、title、original_title、year、media_type、season、files；files 中只允许 source_id、episode、kind。不要解释，不要 Markdown 代码块。`
+var errModelResponseTimeout = errors.New("model response timeout")
+
+const recognitionSystemPrompt = `你是媒体文件识别助手。输入是内置规则无法稳定识别的多个作品组。
+只能根据输入中已有的 work_id、目录名、少量代表文件名和候选信息判断作品身份。
+文件名或相对路径中明确的 SxxExx、Sxx、Season xx、第x季是季号的权威信息；不得用作品首播年、目录年份或默认第一季覆盖。
+输入已提供 candidate_season 时必须保留该值；同一作品组无法确定唯一季号时不要返回 season。
+只返回 JSON 对象，格式为：
+{"items":[{"work_id":"work_1","recognized":true,"title":"中文或常用标题","original_title":"可选原名","year":2024,"media_type":"movie|tv","season":1}]}
+每个 work_id 最多返回一次。无法稳定判断时返回 recognized=false，不要猜。不要返回逐文件结果、目标目录、TMDB ID、置信度、文件新名或任何操作。`
+
+const recognitionRepairPrompt = `将下面内容修正为严格 JSON。只返回一个对象，顶层只有 items 数组。items 中只允许 work_id、recognized、title、original_title、year、media_type、season。不要解释，不要 Markdown 代码块。`
+
+const episodeSystemPrompt = `你是剧集文件集数补判助手。作品身份已确认，输入只包含程序无法判断集数的文件。
+只能从文件名和相对路径中提取明确集数，不得按列表顺序猜测，不得虚构 source_id。
+只返回 JSON 对象，格式为：
+{"files":[{"source_id":"source_1","episode":1}]}
+无法稳定判断的文件不要返回。不要解释，不要 Markdown 代码块。`
+
+const episodeRepairPrompt = `将下面内容修正为严格 JSON。只返回一个对象，顶层只有 files 数组，每项只允许 source_id 和 episode。不要解释，不要 Markdown 代码块。`
 
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -225,33 +240,44 @@ func (s *Service) executeModelRequest(
 	body []byte,
 	headers map[string]string,
 ) (int, []byte, error) {
-	for attempt := 0; attempt < 2; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-		if err != nil {
-			return 0, nil, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-		for key, value := range headers {
-			req.Header.Set(key, value)
-		}
-		resp, data, err := httpx.Execute(s.http, req, 4<<20)
-		if err != nil {
-			if attempt == 0 && waitContext(ctx, 350*time.Millisecond) {
-				continue
-			}
-			return 0, nil, domain.Errorf(domain.CodeDriverError, "连接模型服务失败")
-		}
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-			if attempt == 0 && waitContext(ctx, 500*time.Millisecond) {
-				continue
-			}
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			return resp.StatusCode, data, modelHTTPError(resp.StatusCode)
-		}
-		return resp.StatusCode, data, nil
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
 	}
-	return 0, nil, fmt.Errorf("model request failed")
+	req.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	resp, data, err := httpx.Execute(s.http, req, 4<<20)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, nil, &domain.AppError{Code: domain.CodeDriverError, Message: "AI 识别已取消", Err: ctxErr}
+		}
+		var netErr net.Error
+		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
+			return 0, nil, modelTimeoutError(err)
+		}
+		return 0, nil, &domain.AppError{Code: domain.CodeDriverError, Message: "连接模型服务失败", Err: err}
+	}
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusGatewayTimeout || resp.StatusCode == 524 {
+		return resp.StatusCode, data, modelTimeoutError(errors.New(resp.Status))
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp.StatusCode, data, modelHTTPError(resp.StatusCode)
+	}
+	return resp.StatusCode, data, nil
+}
+
+func modelTimeoutError(cause error) error {
+	return &domain.AppError{
+		Code:    domain.CodeDriverError,
+		Message: "模型响应超时（120 秒）",
+		Err:     errors.Join(errModelResponseTimeout, cause),
+	}
+}
+
+func isModelTimeout(err error) bool {
+	return errors.Is(err, errModelResponseTimeout)
 }
 
 func openAIEndpoint(baseURL string) (string, error) {
@@ -317,16 +343,5 @@ func modelHTTPError(status int) error {
 		return domain.Errorf(domain.CodeRateLimited, "模型服务请求过于频繁，请稍后重试")
 	default:
 		return domain.Errorf(domain.CodeDriverError, "模型服务请求失败（HTTP %d）", status)
-	}
-}
-
-func waitContext(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
 	}
 }

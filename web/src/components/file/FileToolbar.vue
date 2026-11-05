@@ -38,12 +38,12 @@ const props = defineProps<{
 
 const createItems = computed<DropdownMenuItem[]>(() => {
   const items: DropdownMenuItem[] = [
-    { key: "create-folder", label: "新建文件夹", icon: "folder", type: "action" },
-    { key: "upload-file", label: "上传文件", icon: "file", type: "action" },
-    { key: "upload-folder", label: "上传文件夹", icon: "folder-open", type: "action" },
+    { key: "create-folder", label: "新建文件夹", icon: "badge-folder", type: "action" },
+    { key: "upload-file", label: "上传文件", icon: "badge-file", type: "action" },
+    { key: "upload-folder", label: "上传文件夹", icon: "badge-folder-open", type: "action" },
   ];
   if (props.offlineDownloadSupported) {
-    items.push({ key: "offline-download", label: "离线下载", icon: "cloud", type: "action" });
+    items.push({ key: "offline-download", label: "离线下载", icon: "hand-cloud", type: "action" });
   }
   return items;
 });
@@ -73,12 +73,12 @@ function onCreateSelect(key: string) {
       >
         <SvgIcon
           v-if="compactHome"
-          :name="favoritesOpen ? 'star-solid' : 'star'"
-          :size="17"
+          :name="favoritesOpen ? 'hand-star-solid' : 'hand-star'"
+          :size="18"
           class-name="file-toolbar__favorites-toggle-icon"
         />        <SvgIcon
           v-else
-          name="chevron-down"
+          name="hand-chevron-down"
           :size="16"
           class-name="file-toolbar__favorites-toggle-icon"
         />
@@ -101,11 +101,11 @@ function onCreateSelect(key: string) {
             @click="toggle"
           >
             <span class="file-toolbar__menu-main">
-              <span class="file-toolbar__icon"><SvgIcon name="plus" :size="17" /></span>
+              <span class="file-toolbar__icon"><SvgIcon name="hand-plus" :size="18" /></span>
               <span class="file-toolbar__menu-label">新建</span>
             </span>
             <span class="file-toolbar__menu-arrow" :class="{ open }">
-              <SvgIcon name="chevron-down" :size="14" />
+              <SvgIcon name="hand-chevron-down" :size="14" />
             </span>
           </AppButton>
         </template>
@@ -113,7 +113,7 @@ function onCreateSelect(key: string) {
 
       <AppButton variant="secondary" class="file-toolbar__btn file-toolbar__btn--refresh" :disabled="refreshing" @click="emit('refresh')">
         <span class="file-toolbar__icon" :class="{ spin: refreshing }">
-          <SvgIcon name="refresh" :size="17" />
+          <SvgIcon name="badge-refresh" :size="18" />
         </span>
         <span>刷新</span>
       </AppButton>
@@ -134,21 +134,14 @@ function onCreateSelect(key: string) {
         @click="emit('open-upload-tasks')"
       >
         <span class="transfer-status-icon-wrap">
-          <svg
+          <SvgIcon
             v-if="uploadTaskSuccess && !uploadTaskActive && !uploadTaskFailed"
             class="transfer-status-icon success"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.75"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <path d="m3.5 8.5 3 3 6-7" />
-          </svg>
+            name="hand-check"
+            :size="14"
+          />
           <span v-else class="transfer-status-icon transfer-status-icon-svg">
-            <SvgIcon name="upload" :size="14" />
+            <SvgIcon name="badge-upload" :size="14" />
           </span>
         </span>
         <span v-if="compactHome && (uploadTaskCount || 0) > 0" class="transfer-status-badge">
@@ -176,7 +169,7 @@ function onCreateSelect(key: string) {
           :title="performanceExpanded ? '收起性能信息' : '展开性能信息'"
           @click="togglePerformancePanel"
         >
-          <span class="file-toolbar__icon"><SvgIcon name="lightning" :size="17" /></span>
+          <span class="file-toolbar__icon"><SvgIcon name="badge-lightning" :size="18" /></span>
         </button>
       </div>
 

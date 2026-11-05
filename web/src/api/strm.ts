@@ -30,6 +30,8 @@ export interface StrmTask {
   removed_count: number;
   last_scan?: string;
   last_scan_status?: string;
+  /** 后端计算的下一次自动扫描时间；缺省表示不参与自动调度（手动或未启用）。 */
+  next_run_at?: string;
   automation_managed?: boolean;
   is_scanning?: boolean;
   scan_phase?:
@@ -56,6 +58,9 @@ export interface StrmBranch {
   parent_id: string;
   path: string;
   relative_path?: string;
+  // relative_dirs 只用于提交（相对目录的目录段数组），服务端不会回传。
+  // 目录名自带斜杠时，显示路径无法还原段边界，必须靠它。
+  relative_dirs?: string[];
   recursive: boolean;
   retention_days: number;
   branch_type: string;
@@ -213,6 +218,9 @@ export function generateCurrentDirectoryStrm(body: {
   account_id: number;
   parent_id: string;
   path: string;
+  // dirs：当前目录的目录段数组（相对账号根）。显示路径用 "/" 拼起来后无法还原
+  // 段边界（目录名自带斜杠时和多层目录长得一样），所以一并传上去。
+  dirs?: string[];
   items: StrmCurrentDirectoryItem[];
 }) {
   return http.post<StrmCurrentDirectoryResult>("/admin/strm/generate-current-directory", body);
@@ -228,6 +236,7 @@ export function fetchStrmDirectoryStatus(body: {
   account_id: number;
   parent_id: string;
   path: string;
+  dirs?: string[];
   items: StrmCurrentDirectoryItem[];
 }, signal?: AbortSignal) {
   return http.post<StrmDirectoryStatus>("/admin/strm/directory-status", body, undefined, signal);

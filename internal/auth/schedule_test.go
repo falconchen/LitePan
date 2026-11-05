@@ -2,12 +2,28 @@ package auth
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
 	"litepan/internal/domain"
 	"litepan/internal/driver"
 )
+
+func TestScheduleLogIgnoresSmallRecalculationDrift(t *testing.T) {
+	sch := NewScheduler(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	next := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	sch.logNextWaitIfChanged(next, time.Hour, "", nil)
+	sch.logNextWaitIfChanged(next.Add(10*time.Second), time.Hour, "Cookie 回写", nil)
+	if !sch.lastLoggedNext.Equal(next) {
+		t.Fatalf("小幅重算不应重复记录：%v", sch.lastLoggedNext)
+	}
+	sch.logNextWaitIfChanged(next.Add(time.Minute), time.Hour, "认证刷新完成", nil)
+	if !sch.lastLoggedNext.Equal(next.Add(time.Minute)) {
+		t.Fatalf("明显变化应记录新时间：%v", sch.lastLoggedNext)
+	}
+}
 
 func TestSeedInitialScheduleTokenDriver(t *testing.T) {
 	now := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)

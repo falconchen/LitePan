@@ -26,12 +26,13 @@ export function useLocalUploadDispatcher(
     options: Partial<LocalUploadPayload> = {},
   ) {
     const task = localTask || store.createLocalUploadTask(selectedFile);
-    const targetPath = options.targetPath || task.target_path || deps.currentPath.value;
+    const targetPath = options.targetPath ?? task.target_path ?? deps.currentPath.value;
     const displayName = options.displayName || task.file_name || selectedFile.name;
     const targetDisplayPath =
       options.targetDisplayPath || task.target_display_path || buildUploadTargetDisplayPath();
     if (!localTask) store.addLocalUploadTask(task);
     store.localUploadTaskPayloads.set(task.task_id, {
+      ...options,
       file: selectedFile,
       conflictPolicy,
       targetPath,
@@ -44,13 +45,13 @@ export function useLocalUploadDispatcher(
       store.localUploadTaskPayloads.delete(task.task_id);
       return { success: false, canceled: true };
     }
-    if (store.batchPauseInProgress.value || store.pausedLocalUploadTaskIds.has(task.task_id)) {
+    if (store.pausedLocalUploadTaskIds.has(task.task_id)) {
       store.updateLocalUploadTask(task.task_id, { status: "paused", message: "上传已暂停", error: "" });
       return { success: false, paused: true };
     }
 
     const formData = new FormData();
-    formData.append("account_id", String(deps.selectedAccountId.value));
+    formData.append("account_id", String(task.account_id));
     formData.append("path", targetPath);
     formData.append("file", selectedFile);
     formData.append("conflict_policy", conflictPolicy);
@@ -98,7 +99,7 @@ export function useLocalUploadDispatcher(
         store.pausedLocalUploadTaskIds.delete(task.task_id);
         return { success: false, canceled: true };
       }
-      if (store.pausedLocalUploadTaskIds.has(task.task_id) || store.batchPauseInProgress.value) {
+      if (store.pausedLocalUploadTaskIds.has(task.task_id)) {
         store.canceledLocalUploadTaskIds.delete(task.task_id);
         store.pausedLocalUploadTaskIds.delete(task.task_id);
         try {
@@ -128,7 +129,7 @@ export function useLocalUploadDispatcher(
         store.pausedLocalUploadTaskIds.delete(task.task_id);
         return { success: false, canceled: true };
       }
-      if (controller.signal.aborted && (store.pausedLocalUploadTaskIds.has(task.task_id) || store.batchPauseInProgress.value)) {
+      if (controller.signal.aborted && store.pausedLocalUploadTaskIds.has(task.task_id)) {
         store.updateLocalUploadTask(task.task_id, { status: "paused", message: "上传已暂停", error: "" });
         return { success: false, paused: true };
       }
@@ -176,14 +177,11 @@ export function useLocalUploadDispatcher(
     try {
       await stream.refreshUploadTaskServerConcurrency();
       while (true) {
-        let advanced = false;
-
         if (store.localDispatchingTaskIds.size < localDispatchConcurrency) {
           const nextLocal = getNextLocalUploadTaskCandidate(store);
           if (nextLocal) {
             const ok = await activateQueuedUploadTask(nextLocal);
             if (ok) {
-              advanced = true;
               continue;
             }
           }
@@ -193,12 +191,11 @@ export function useLocalUploadDispatcher(
         if (nextRemote) {
           const ok = await activateQueuedUploadTask(nextRemote);
           if (ok) {
-            advanced = true;
             continue;
           }
         }
 
-        if (!advanced) break;
+        break;
       }
     } finally {
       uploadTaskSchedulerRunning = false;

@@ -1,4 +1,6 @@
-import { computed, reactive, type ComputedRef, type Ref } from "vue";
+import { computed, reactive, ref, type ComputedRef, type Ref } from "vue";
+import { getApiErrorMessage } from "@/api/client";
+import { toast } from "@/composables/useToast";
 import { normalizeBoolSetting, settingItemChanged } from "@/utils/settingsDirty";
 
 export type SettingsFieldCompare<T extends object> = (
@@ -83,6 +85,35 @@ export function useSettingsKVForm() {
     isEntryChanged,
     isAnyChanged,
   };
+}
+
+type SettingsSaveOptions = {
+  successMessage?: string;
+  errorMessage?: string;
+  silent?: boolean;
+  rethrow?: boolean;
+};
+
+export function useSettingsSave() {
+  const saving = ref(false);
+
+  async function runSave(task: () => Promise<void>, options: SettingsSaveOptions = {}): Promise<boolean> {
+    if (saving.value) return false;
+    saving.value = true;
+    try {
+      await task();
+      if (options.successMessage && !options.silent) toast.success(options.successMessage);
+      return true;
+    } catch (error) {
+      toast.error(getApiErrorMessage(error, options.errorMessage || "保存失败"));
+      if (options.rethrow) throw error;
+      return false;
+    } finally {
+      saving.value = false;
+    }
+  }
+
+  return { saving, runSave };
 }
 
 export type SettingsPanelExpose = {

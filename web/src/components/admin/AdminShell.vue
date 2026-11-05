@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import AdminAccountChip from "@/components/admin/AdminAccountChip.vue";
 import AdminGlobalActions from "@/components/admin/AdminGlobalActions.vue";
@@ -201,12 +202,7 @@ onBeforeUnmount(() => {
         :aria-expanded="mobileDrawerOpen"
         @click="toggleSidebar"
       >
-        <svg v-if="mobileDrawerOpen" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m6 6 12 12M18 6 6 18" />
-        </svg>
-        <svg v-else viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M4 7h16M4 12h16M4 17h16" />
-        </svg>
+        <SvgIcon :name="mobileDrawerOpen ? 'hand-close' : 'hand-menu'" :size="18" />
       </button>
 
       <!-- 真面包屑：后台 / 页面 / 当前 tab（可点击项跳转，当前项高亮） -->
@@ -314,7 +310,7 @@ onBeforeUnmount(() => {
   transform: translateX(-50%);
   z-index: 220;
   padding: 3px 9px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: #18181b;
   color: #fff;
   font-size: 11px;
@@ -370,7 +366,7 @@ onBeforeUnmount(() => {
 
 .sidebar__nav::-webkit-scrollbar-thumb {
   background: rgba(255, 255, 255, 0.3);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
 .sidebar__nav::-webkit-scrollbar-track {
@@ -393,7 +389,7 @@ onBeforeUnmount(() => {
   border: none;
   background: transparent;
   color: rgba(255, 255, 255, 0.85);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 500;
   transition: all 0.2s ease;

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted } from "vue";
-import { getApiErrorMessage } from "@/api/client";
 import { fetchSystemConfig, updateWebDAVConfig } from "@/api/auth";
 import AppButton from "@/components/base/AppButton.vue";
 import AppInput from "@/components/base/AppInput.vue";
@@ -9,10 +8,10 @@ import SettingsBoolSegment from "@/components/admin/SettingsBoolSegment.vue";
 import SettingsCard from "@/components/admin/SettingsCard.vue";
 import SettingsRow from "@/components/admin/SettingsRow.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
-import { useSettingsForm } from "@/composables/useSettingsForm";
+import { useSettingsForm, useSettingsSave } from "@/composables/useSettingsForm";
 import { useAdminPageLoading } from "@/composables/useAdminLoadingBar";
 import { useSettingsLoad } from "@/composables/useSettingsLoad";
-import { toast, copyTextToClipboard } from "@/composables/useToast";
+import { copyTextToClipboard } from "@/composables/useToast";
 
 const props = withDefaults(
   defineProps<{
@@ -22,6 +21,7 @@ const props = withDefaults(
 );
 
 const { loading, runLoad } = useSettingsLoad();
+const { runSave } = useSettingsSave();
 useAdminPageLoading("share", loading);
 
 const { settings, isDirty, isFieldChanged, applyBaseline, revert: revertSettings } = useSettingsForm({
@@ -52,16 +52,12 @@ async function copyWebdavUrl() {
 
 async function saveSettings(silent = false) {
   if (!isDirty.value) return;
-  try {
+  await runSave(async () => {
     await updateWebDAVConfig({
       webdav_enabled: settings.webdav_enabled,
     });
     applyBaseline({ webdav_enabled: settings.webdav_enabled });
-    if (!silent) toast.success("WebDAV 设置已保存");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存失败"));
-    throw e;
-  }
+  }, { successMessage: "WebDAV 设置已保存", silent, rethrow: true });
 }
 
 onMounted(() => {

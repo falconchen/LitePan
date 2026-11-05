@@ -22,7 +22,7 @@ defineProps<{
       <path d="m3.5 8.5 3 3 6-7" />
     </svg>
     <svg
-      v-else-if="variant === 'error'"
+      v-else-if="variant === 'error' || variant === 'warning'"
       viewBox="0 0 16 16"
       fill="none"
       stroke="currentColor"
@@ -50,6 +50,9 @@ defineProps<{
 </template>
 
 <style scoped>
+.admin-status-icon--warning {
+  color: var(--warning);
+}
 .admin-status-icon {
   display: inline-flex;
   align-items: center;

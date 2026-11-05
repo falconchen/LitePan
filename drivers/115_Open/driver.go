@@ -78,10 +78,8 @@ func (d *Driver) Init(ctx context.Context) error {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 30 * time.Second})
 	}
 	if d.uploadClient == nil {
-		d.uploadClient = httpx.NewClient(httpx.ClientOptions{
-			Timeout:               -1,
-			ResponseHeaderTimeout: ossResponseHeaderTimeout,
-		})
+		// 等响应头的时间放宽到 ossResponseHeaderTimeout：合并分片会触发 115 回调校验整个文件。
+		d.uploadClient = httpx.NewUploadClient(d.client, ossResponseHeaderTimeout, config.UploadUseHTTP2)
 	}
 	d.mu.Lock()
 	token := d.token

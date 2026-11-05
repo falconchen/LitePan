@@ -14,7 +14,7 @@
   width: 560px;
   max-width: 90vw;
   background: var(--surface);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   box-shadow: var(--shadow-pop);
   display: flex;
   flex-direction: column;
@@ -28,7 +28,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 16px 24px;
+  min-height: var(--modal-head-h);
+  padding: 0 24px;
   border-bottom: 1px solid var(--border);
   background: var(--panel-head-bg);
   border-radius: 12px 12px 0 0;
@@ -42,30 +43,6 @@
   line-height: 1.4;
 }
 
-.confirm-modal__close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.confirm-modal__close:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.confirm-modal__close:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 
 .confirm-modal__body {
   padding: 32px 24px 24px;
@@ -116,11 +93,6 @@
 .confirm-modal__flat-icon .lp-svg-icon {
   position: relative;
   z-index: 1;
-}
-
-.confirm-modal__icon {
-  width: 22px !important;
-  height: 22px !important;
 }
 
 .confirm-modal__flat-icon--warning .lp-svg-icon {
@@ -188,7 +160,7 @@
 }
 .upload-notice__card {
   padding: 14px 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface-sunken);
   border: 1px solid var(--border);
 }
@@ -205,7 +177,7 @@
   align-items: center;
   gap: 6px;
   padding: 10px 8px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-regular);
@@ -236,7 +208,7 @@
 .upload-notice__tip-bar {
   flex-shrink: 0;
   width: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--brand-gradient);
 }
 
@@ -255,7 +227,7 @@
 .confirm-modal__btn {
   min-width: 70px;
   padding: 8px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 14px;
 }
 
@@ -299,7 +271,7 @@
 /* 野兽派主题：确认/说明弹窗及其内容块保持直角。 */
 :root[data-skin="brutal"] .confirm-modal,
 :root[data-skin="brutal"] .confirm-modal__head,
-:root[data-skin="brutal"] .confirm-modal__close,
+:root[data-skin="brutal"] .modal-close,
 :root[data-skin="brutal"] .confirm-modal__flat-icon,
 :root[data-skin="brutal"] .confirm-modal__flat-icon::before,
 :root[data-skin="brutal"] .confirm-modal__btn,
@@ -319,7 +291,7 @@
   border-bottom: var(--brutal-bw) solid var(--brutal-ink);
 }
 
-:root[data-skin="brutal"] .confirm-modal__close:hover:not(:disabled) {
+:root[data-skin="brutal"] .modal-close:hover:not(:disabled) {
   background: color-mix(in srgb, var(--brutal-yellow) 58%, transparent);
   color: var(--brutal-ink);
 }

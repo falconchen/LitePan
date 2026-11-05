@@ -7,6 +7,7 @@ import AppButton from "@/components/base/AppButton.vue";
 import AppPlainModal from "@/components/base/AppPlainModal.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -184,7 +185,7 @@ onUnmounted(clearTimers);
 
     <div class="qtv-body" :class="{ 'qtv-body--failed': phase === 'failed' || phase === 'expired' || phase === 'error' }">
       <div v-if="phase === 'loading'" class="qtv-state qtv-state--loading">
-        <BusySpinner :size="28" color="var(--brand)" />
+        <BusySpinner :size="26" color="var(--brand)" />
         <span>正在生成二维码...</span>
       </div>
 
@@ -199,7 +200,7 @@ onUnmounted(clearTimers);
         <div class="qtv-failed-panel">
           <div class="qtv-failed-panel__header">
             <div class="qtv-failed-panel__icon-wrap">
-              <i class="fas fa-circle-exclamation"></i>
+              <SvgIcon name="circle-exclamation" size="1em" />
             </div>
             <div class="qtv-failed-panel__meta">
               <div class="qtv-result-title">{{ failedTitle }}</div>
@@ -270,7 +271,7 @@ onUnmounted(clearTimers);
 .qtv-image {
   width: 220px;
   height: 220px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
   background: #fff;
   padding: 8px;
@@ -293,7 +294,7 @@ onUnmounted(clearTimers);
   font-weight: 600;
 }
 .qtv-result-title {
-  color: #1f2937;
+  color: var(--text);
   font-size: 17px;
   font-weight: 700;
   line-height: 1.35;
@@ -318,7 +319,7 @@ onUnmounted(clearTimers);
   flex-shrink: 0;
   width: 42px;
   height: 42px;
-  border-radius: 13px;
+  border-radius: var(--radius-md);
   background: linear-gradient(180deg, #ef4444, #dc2626);
   box-shadow: 0 12px 24px rgba(220, 38, 38, 0.18);
   color: #fff;
@@ -336,7 +337,7 @@ onUnmounted(clearTimers);
   width: 100%;
   padding: 16px 18px;
   border: 1px solid rgba(245, 158, 11, 0.22);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   background: linear-gradient(180deg, rgba(255, 251, 235, 0.96), rgba(255, 247, 237, 0.92));
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.05);
   text-align: left;
@@ -367,7 +368,7 @@ onUnmounted(clearTimers);
   .qtv-failed-panel__icon-wrap {
     width: 38px;
     height: 38px;
-    border-radius: 12px;
+    border-radius: var(--radius-md);
   }
   .qtv-result-title {
     font-size: 16px;

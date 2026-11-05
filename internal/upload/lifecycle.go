@@ -2,7 +2,6 @@ package upload
 
 import (
 	"context"
-	"os"
 	"strings"
 	"time"
 
@@ -50,7 +49,7 @@ func (m *Manager) pause(taskID string) (*Task, bool, bool) {
 		m.mu.Unlock()
 		return t, true, false
 	}
-	if st.Status != StatusPending && st.Status != StatusRunning {
+	if !isActiveUploadStatus(st.Status) {
 		t := m.snapshot(st)
 		m.mu.Unlock()
 		return t, true, false
@@ -59,11 +58,7 @@ func (m *Manager) pause(taskID string) (*Task, bool, bool) {
 	st.Status = StatusPaused
 	st.resumePriority = false
 	st.SpeedBytesPerSecond = 0
-	if st.SourceType == SourceTypeCrossTransfer && st.Phase == PhaseDownloading {
-		st.Message = "源盘下载已暂停"
-	} else {
-		st.Message = "上传已暂停"
-	}
+	st.Message = pausedMessage(st)
 	st.Error = ""
 	st.UpdatedAt = timeutil.UnixFloat(time.Now())
 	cancel := st.cancel
@@ -86,7 +81,7 @@ func (m *Manager) Resume(ctx context.Context, taskID string) (*Task, bool) {
 		m.mu.Unlock()
 		return nil, false
 	}
-	if st.Status != StatusPaused && st.Status != StatusFailed && st.Status != StatusCanceled {
+	if !isResumableUploadStatus(st.Status) {
 		t := m.snapshot(st)
 		m.mu.Unlock()
 		return t, true
@@ -112,28 +107,19 @@ func (m *Manager) Resume(ctx context.Context, taskID string) (*Task, bool) {
 		m.mu.Unlock()
 		return t, true
 	}
-	if st.Status != StatusPaused && st.Status != StatusFailed && st.Status != StatusCanceled {
+	if !isResumableUploadStatus(st.Status) {
 		t := m.snapshot(st)
 		m.mu.Unlock()
 		return t, true
 	}
-	if uploadNeedsLocalFile(st) {
-		if st.localPath == "" {
-			markMissingLocalFileFailed(st)
-			snap := st
-			m.mu.Unlock()
-			_ = m.persistTask(snap)
-			m.broadcast(taskID)
-			return snapshotCopy(snap), true
-		}
-		if _, err := os.Stat(st.localPath); err != nil {
-			markMissingLocalFileFailed(st)
-			snap := st
-			m.mu.Unlock()
-			_ = m.persistTask(snap)
-			m.broadcast(taskID)
-			return snapshotCopy(snap), true
-		}
+	if requiredLocalFileMissing(st) {
+		markMissingLocalFileFailed(st)
+		snap := st
+		task := m.snapshot(st)
+		m.mu.Unlock()
+		_ = m.persistTask(snap)
+		m.broadcast(taskID)
+		return task, true
 	}
 	m.queueOrder++
 	st.QueueOrder = m.queueOrder
@@ -148,8 +134,8 @@ func (m *Manager) Resume(ctx context.Context, taskID string) (*Task, bool) {
 		st.Progress = progress
 		st.UploadedBytes = uploaded
 		st.Message = "准备继续上传"
-	} else if st.SourceType == SourceTypeCrossTransfer && st.Phase == PhaseDownloading {
-		st.Progress = progressForBytes(st.DownloadedBytes, st.TotalBytes)
+	} else if isCrossTransferDownload(st) {
+		st.Progress = calcProgress(st.DownloadedBytes, st.TotalBytes)
 		st.UploadedBytes = 0
 		st.Message = "准备继续源盘下载"
 	} else {
@@ -164,16 +150,4 @@ func (m *Manager) Resume(ctx context.Context, taskID string) (*Task, bool) {
 	go m.runTask(taskID)
 	m.broadcast(taskID)
 	return task, true
-}
-
-func snapshotCopy(st *taskState) *Task {
-	t := st.Task
-	return &t
-}
-
-func progressForBytes(done, total int64) int {
-	if total <= 0 {
-		return 0
-	}
-	return calcProgress(done, total)
 }

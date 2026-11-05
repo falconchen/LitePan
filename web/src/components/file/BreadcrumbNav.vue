@@ -204,7 +204,7 @@ onUnmounted(() => {
   transform: translateX(-50%) translateY(-5px);
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
   z-index: 10020;
   min-width: 120px;
@@ -231,7 +231,7 @@ onUnmounted(() => {
   font-weight: 400;
   color: var(--text-regular);
   margin: 2px 4px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
 }
 

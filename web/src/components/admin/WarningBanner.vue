@@ -14,7 +14,7 @@
   gap: 10px;
   margin-bottom: 16px;
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: rgba(245, 158, 11, 0.12);
   border: 1px solid rgba(245, 158, 11, 0.35);
   color: var(--text);

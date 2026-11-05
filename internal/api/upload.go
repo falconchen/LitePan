@@ -19,6 +19,16 @@ import (
 	"litepan/internal/upload"
 )
 
+// isClientGone 判断上传请求的客户端连接是否已断开（主动取消）。
+func isClientGone(r *http.Request) bool {
+	return r != nil && errors.Is(r.Context().Err(), context.Canceled)
+}
+
+// isCancelError 兼容底层传输层对取消场景的文本化错误。
+func isCancelError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "context canceled")
+}
+
 type batchDeleteUploadTasksReq struct {
 	TaskIDs            []string `json:"task_ids"`
 	DeleteUploadedFile bool     `json:"delete_uploaded_file"`
@@ -31,7 +41,7 @@ type batchControlUploadTasksReq struct {
 
 func (h *Handler) createUploadTask(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseMultipartForm(32 << 20); err != nil {
-		if errors.Is(r.Context().Err(), context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
+		if isClientGone(r) || isCancelError(err) {
 			return
 		}
 		writeErr(w, translateUploadFormParseError(err))
@@ -61,7 +71,7 @@ func (h *Handler) createUploadTask(w http.ResponseWriter, r *http.Request) {
 
 	tempPath, total, err := saveUploadTemp(h.uploads.TempDir(), file, header.Filename)
 	if err != nil {
-		if errors.Is(r.Context().Err(), context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
+		if isClientGone(r) || isCancelError(err) {
 			return
 		}
 		writeErr(w, err)
@@ -99,7 +109,7 @@ func (h *Handler) createUploadTask(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		_ = os.Remove(tempPath)
-		if errors.Is(r.Context().Err(), context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
+		if isClientGone(r) || isCancelError(err) {
 			return
 		}
 		writeErr(w, err)

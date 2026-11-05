@@ -62,16 +62,13 @@ func wireHTTPServer(cfg config.Config, logs *logx.Manager, st *storeBundle, core
 		return nil, err
 	}
 	spaceCleanupSvc, err := spacecleanup.New(spacecleanup.Options{
-		DataDir:   cfg.DataDir,
-		StrmDir:   cfg.StrmDir,
-		DBPath:    cfg.DBPath,
-		StrmTasks: st.store.StrmTasks,
-		Cache:     core.cache,
-		DB:        st.db,
-		Logs:      logs,
-		LogRetentionDays: func() int {
-			return st.settings.Int(settings.KeyLogRetentionDays)
-		},
+		DataDir:           cfg.DataDir,
+		StrmDir:           cfg.StrmDir,
+		DBPath:            cfg.DBPath,
+		StrmTasks:         st.store.StrmTasks,
+		Cache:             core.cache,
+		DB:                st.db,
+		Logs:              logs,
 		UploadActivePaths: svc.uploads.ActiveTempPaths,
 		OfflineTempRoots:  svc.offlineDownloads.BuiltinTempRoots,
 		OfflineActivePaths: func(ctx context.Context) []string {
@@ -140,8 +137,10 @@ func wireHTTPServer(cfg config.Config, logs *logx.Manager, st *storeBundle, core
 		Favorites:         svc.favorites,
 		Uploads:           svc.uploads,
 		OfflineDownloads:  svc.offlineDownloads,
+		CloudShares:       svc.cloudShares,
 		Playback:          svc.playback,
 		Strm:              svc.strm,
+		StrmDelete:        svc.strmDelete,
 		CacheRetention:    svc.cacheRetention,
 		MediaOrganize:     svc.mediaOrganize,
 		AIOrganize:        svc.aiOrganize,

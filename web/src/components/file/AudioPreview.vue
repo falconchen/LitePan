@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import "media-chrome";
 import "media-chrome/dist/lang/zh-CN.js";
 import { setLanguage } from "media-chrome/dist/utils/i18n.js";
-import "@fortawesome/fontawesome-free/css/all.min.css";
 import { filesApi } from "@/api/files";
 import type { FileItem } from "@/api/types";
 import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
@@ -11,6 +10,8 @@ import { fileKind } from "@/utils/fileIcon";
 import { fileExtension, formatSize } from "@/utils/format";
 import PreviewHeader from "./PreviewHeader.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
 
 const props = defineProps<{
   accountId: number;
@@ -229,7 +230,7 @@ onUnmounted(() => {
             <section class="audio-preview__now">
               <div class="audio-preview__art" :class="{ 'is-playing': mediaPlaying }" aria-hidden="true">
                 <div class="audio-preview__disc">
-                  <span><i class="fa-solid fa-music" /></span>
+                  <span><SvgIcon name="music" size="1em" /></span>
                 </div>
               </div>
 
@@ -244,18 +245,23 @@ onUnmounted(() => {
                 正在加载音频…
               </div>
 
-              <div v-if="mediaError" class="audio-preview__error" role="alert">
-                <i class="fa-solid fa-circle-exclamation" aria-hidden="true" />
-                <div>
-                  <strong>浏览器无法直接播放这个音频</strong>
-                  <span>可能是音频编码不受支持，可下载后使用本地播放器打开。</span>
-                </div>
-                <button type="button" @click="downloadCurrent">下载音频</button>
-              </div>
+              <PreviewState
+                v-if="mediaError"
+                class="audio-preview__error"
+                inline
+                icon="circle-exclamation"
+                tone="warn"
+                title="浏览器无法直接播放这个音频"
+                message="可能是音频编码不受支持，可下载后使用本地播放器打开。"
+              >
+                <template #actions>
+                  <button type="button" @click="downloadCurrent">下载音频</button>
+                </template>
+              </PreviewState>
 
               <div class="audio-preview__transport">
                 <button type="button" aria-label="上一首" :disabled="currentIndex <= 0" @click="playAdjacent(-1)">
-                  <i class="fa-solid fa-backward-step" aria-hidden="true" />
+                  <SvgIcon name="backward-step" size="1em" />
                 </button>
                 <media-control-bar class="audio-preview__controls">
                   <media-play-button aria-label="播放或暂停" />
@@ -266,7 +272,7 @@ onUnmounted(() => {
                   <media-playback-rate-button rates="0.5 0.75 1 1.25 1.5 2" />
                 </media-control-bar>
                 <button type="button" aria-label="下一首" :disabled="currentIndex >= tracks.length - 1" @click="playAdjacent(1)">
-                  <i class="fa-solid fa-forward-step" aria-hidden="true" />
+                  <SvgIcon name="forward-step" size="1em" />
                 </button>
               </div>
 
@@ -295,14 +301,14 @@ onUnmounted(() => {
                   @click="selectTrack(index)"
                 >
                   <span class="audio-track__index">
-                    <i v-if="index === currentIndex" class="fa-solid fa-volume-high" aria-hidden="true" />
+                    <SvgIcon name="volume-high" size="1em" v-if="index === currentIndex" />
                     <template v-else>{{ String(index + 1).padStart(2, "0") }}</template>
                   </span>
                   <span class="audio-track__copy">
                     <strong :title="trackTitle(track.name)">{{ trackTitle(track.name) }}</strong>
                     <small>{{ audioDetails(track) }}</small>
                   </span>
-                  <i class="fa-solid fa-play audio-track__play" aria-hidden="true" />
+                  <SvgIcon name="play" size="1em" class="audio-track__play" />
                 </button>
               </div>
             </aside>
@@ -350,7 +356,7 @@ onUnmounted(() => {
   transform: translateX(-50%);
   padding: 9px 14px;
   border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgb(3 11 25 / 88%);
   box-shadow: 0 12px 38px rgb(0 0 0 / 32%);
   font-size: 13px;
@@ -392,7 +398,7 @@ onUnmounted(() => {
     repeating-radial-gradient(circle, transparent 0 8px, rgb(255 255 255 / 3%) 9px 10px),
     conic-gradient(from 20deg, #101b2e, #0a101d, #1c3150, #080d17, #142641, #101b2e);
   box-shadow: 0 18px 45px rgb(0 0 0 / 48%), inset 0 0 0 1px rgb(255 255 255 / 8%);
-  animation: audio-disc-spin 9s linear infinite paused;
+  animation: spin 9s linear infinite paused;
 }
 .audio-preview__art.is-playing .audio-preview__disc { animation-play-state: running; }
 .audio-preview__disc span {
@@ -406,8 +412,6 @@ onUnmounted(() => {
   box-shadow: 0 8px 22px rgb(20 116 222 / 42%);
   font-size: clamp(22px, 3vw, 38px);
 }
-@keyframes audio-disc-spin { to { transform: rotate(360deg); } }
-
 .audio-preview__meta { width: min(760px, 100%); text-align: center; }
 .audio-preview__meta > span { color: #6f91b9; font-size: 11px; font-weight: 650; letter-spacing: 0.1em; }
 .audio-preview__meta h1 {
@@ -439,17 +443,15 @@ onUnmounted(() => {
   margin-top: 16px;
   padding: 13px 15px;
   border: 1px solid rgb(255 169 78 / 24%);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: rgb(44 25 10 / 32%);
 }
-.audio-preview__error > i { color: #ffb45e; font-size: 20px; }
 .audio-preview__error div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-.audio-preview__error strong { font-size: 13px; }
 .audio-preview__error span { color: #aa9c8e; font-size: 11px; }
 .audio-preview__error button {
   padding: 7px 11px;
   border: 1px solid rgb(255 180 93 / 38%);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: rgb(129 72 18 / 34%);
   font-size: 11px;
 }
@@ -481,7 +483,7 @@ onUnmounted(() => {
   min-height: 54px;
   padding: 0 8px;
   border: 1px solid rgb(129 174 232 / 14%);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   background: rgb(5 17 34 / 64%);
   box-shadow: 0 14px 40px rgb(0 0 0 / 22%);
   backdrop-filter: blur(16px);
@@ -514,7 +516,7 @@ onUnmounted(() => {
   flex-direction: column;
   overflow: hidden;
   border: 1px solid rgb(127 171 228 / 16%);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   background: rgb(5 16 32 / 58%);
   box-shadow: 0 24px 70px rgb(0 0 0 / 30%), inset 0 1px 0 rgb(255 255 255 / 5%);
   backdrop-filter: blur(20px);
@@ -532,7 +534,7 @@ onUnmounted(() => {
 .audio-preview__playlist header span { color: #74869f; font-size: 10px; }
 .audio-preview__playlist header b {
   padding: 5px 9px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: #8ac7ff;
   background: rgb(28 124 224 / 16%);
   font-size: 10px;
@@ -548,7 +550,7 @@ onUnmounted(() => {
   padding: 7px 10px;
   text-align: left;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: transparent;
 }
 .audio-track:hover { background: rgb(255 255 255 / 5%); }
@@ -588,7 +590,7 @@ onUnmounted(() => {
     padding: 20px 14px 14px;
     overflow-y: auto;
   }
-  .audio-preview__art { width: min(48vw, 210px); margin-bottom: 14px; border-radius: 18px; }
+  .audio-preview__art { width: min(48vw, 210px); margin-bottom: 14px; border-radius: var(--radius-xl); }
   .audio-preview__meta h1 { font-size: 18px; }
   .audio-preview__transport { grid-template-columns: 38px minmax(0, 1fr) 38px; gap: 5px; }
   .audio-preview__transport > button { width: 38px; height: 38px; }

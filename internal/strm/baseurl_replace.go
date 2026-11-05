@@ -2,9 +2,6 @@ package strm
 
 import (
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -22,47 +19,11 @@ func ReplaceBaseURLInFiles(strmDir, newBaseURL string) (ReplaceBaseURLResult, er
 	if base == "" {
 		return result, fmt.Errorf("new base url required")
 	}
-	root := strings.TrimSpace(strmDir)
-	if root == "" {
-		root = "strm"
-	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		return result, err
-	}
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if d.IsDir() || !strings.EqualFold(filepath.Ext(d.Name()), ".strm") {
-			return nil
-		}
-		result.Total++
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		lines := strings.Split(string(content), "\n")
-		if len(lines) == 0 {
-			return nil
-		}
-		first := strings.TrimSpace(lines[0])
-		if first == "" {
-			return nil
-		}
-		replaced, changed := replaceBaseInLine(first, base)
-		if !changed {
-			return nil
-		}
-		lines[0] = replaced
-		out := strings.Join(lines, "\n")
-		if !strings.HasSuffix(out, "\n") {
-			out += "\n"
-		}
-		if err := os.WriteFile(path, []byte(out), 0o644); err == nil {
-			result.Updated++
-		}
-		return nil
+	total, _, updated, err := rewriteStrmFiles(strmDir, func(line string) (string, bool) {
+		return replaceBaseInLine(line, base)
 	})
+	result.Total = total
+	result.Updated = updated
 	return result, err
 }
 

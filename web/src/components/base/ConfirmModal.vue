@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onUnmounted, watch } from "vue";
+import { computed } from "vue";
 import ConfirmDialogFrame from "@/components/base/ConfirmDialogFrame.vue";
-import { lockPageScroll, unlockPageScroll } from "@/utils/scrollLock";
+import { useModalDismiss } from "@/composables/useModalDismiss";
 import type { ConfirmIcon, ConfirmPreset, ConfirmSize, ConfirmAction } from "@/types/confirm";
 
 const props = withDefaults(
@@ -43,32 +43,10 @@ const emit = defineEmits<{
   "update:checked": [value: boolean];
 }>();
 
-function onKey(e: KeyboardEvent) {
-  if (e.key === "Escape" && !props.loading) emit("close");
-}
-
-function lockPageScrollState(lock: boolean) {
-  if (lock) lockPageScroll();
-  else unlockPageScroll();
-}
-
-watch(
-  () => props.open,
-  (open) => {
-    if (open) {
-      window.addEventListener("keydown", onKey);
-      lockPageScrollState(true);
-    } else {
-      window.removeEventListener("keydown", onKey);
-      lockPageScrollState(false);
-    }
-  },
-);
-
-onUnmounted(() => {
-  window.removeEventListener("keydown", onKey);
-  lockPageScrollState(false);
+useModalDismiss(computed(() => props.open), () => {
+  if (!props.loading) emit("close");
 });
+
 </script>
 
 <template>

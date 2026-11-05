@@ -6,12 +6,13 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
+
 	"litepan/internal/domain"
 	"litepan/internal/upload"
 )
 
-// EnqueuePlainInput 跨盘普传入队参数：不做秒传指纹探测，源目录文件直接
-// 以「下载到服务器临时目录 → 上传目标盘」的持久化 relay 任务整批入队。
+// EnqueuePlainInput 跨盘普传入队参数：不探测秒传指纹，源文件按「下载到临时目录再上传目标盘」的 relay 任务入队。
 type EnqueuePlainInput struct {
 	SourceAccountID   int64
 	SourceAccountName string
@@ -25,9 +26,9 @@ type EnqueuePlainInput struct {
 	Conflict          string
 }
 
-// EnqueuePlainResult 入队汇总；失败原因只在 Message/FailedSample 简要说明，
-// 明细可到任务面板按任务查看。
+// EnqueuePlainResult 入队汇总，失败原因只给简要说明，明细到任务面板查看。
 type EnqueuePlainResult struct {
+	BatchID       string `json:"batch_id,omitempty"`
 	Enqueued      int    `json:"enqueued"`
 	Skipped       int    `json:"skipped"`
 	Failed        int    `json:"failed"`
@@ -37,10 +38,28 @@ type EnqueuePlainResult struct {
 	FailedMessage string `json:"failed_message,omitempty"`
 }
 
-// EnqueuePlain 对每个源目录递归枚举文件（目录/文件数上限与秒传扫描一致），
-// 按源相对结构在目标目录下建镜像目录，再按同名策略创建 relay 上传任务。
-// 入队即返回：任务由 upload.Manager 持久化执行，不依赖浏览器连接。
+// EnqueuePlain 递归枚举各源目录（上限同秒传扫描），按源结构在目标目录建镜像目录并创建 relay 上传任务；
+// 入队即返回，任务由 upload.Manager 持久化执行，不依赖浏览器连接。
 func (s *Service) EnqueuePlain(ctx context.Context, in EnqueuePlainInput) (*EnqueuePlainResult, error) {
+	return s.enqueuePlain(ctx, in, nil)
+}
+
+// EnqueuePlainStream 在扫描和入队过程中持续返回真实进度。
+func (s *Service) EnqueuePlainStream(ctx context.Context, in EnqueuePlainInput, emit func(StreamEvent) error) error {
+	// 浏览器离开后写回可能失败，但已开始的持久化任务入队不应中断。
+	report := func(event StreamEvent) error {
+		_ = emit(event)
+		return nil
+	}
+	result, err := s.enqueuePlain(ctx, in, report)
+	if err != nil {
+		return err
+	}
+	_ = emit(StreamEvent{"event": "end", "result": result})
+	return nil
+}
+
+func (s *Service) enqueuePlain(ctx context.Context, in EnqueuePlainInput, emit func(StreamEvent) error) (*EnqueuePlainResult, error) {
 	conflict := normalizeConflictPolicy(in.Conflict)
 	roots, err := normalizeScanRoots(in.Sources)
 	if err != nil {
@@ -50,16 +69,30 @@ func (s *Service) EnqueuePlain(ctx context.Context, in EnqueuePlainInput) (*Enqu
 		return nil, domain.Errorf(domain.CodeInternal, "上传服务未就绪")
 	}
 
-	scan, err := s.enumeratePlainSources(ctx, in.SourceAccountID, roots)
+	scan, err := s.enumeratePlainSourcesProgress(ctx, in.SourceAccountID, roots, func(directories, files int) error {
+		if emit == nil {
+			return nil
+		}
+		return emit(StreamEvent{"event": "progress", "stage": "scan", "directories": directories, "files": files})
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	res := &EnqueuePlainResult{}
+	batchID := uuid.NewString()
+	res := &EnqueuePlainResult{BatchID: batchID}
 	dirCache := map[string]string{"": in.TargetParentID}
 	// 同名检查按目录缓存目标已有文件名，避免同目录每个文件都触发一次远程 List。
 	nameCache := make(map[string]map[string]struct{})
-	for _, f := range scan.files {
+	for index, f := range scan.files {
+		if emit != nil && index%10 == 0 {
+			if err := emit(StreamEvent{
+				"event": "progress", "stage": "enqueue", "total": len(scan.files),
+				"processed": index, "enqueued": res.Enqueued, "skipped": res.Skipped, "failed": res.Failed,
+			}); err != nil {
+				return nil, err
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -81,12 +114,13 @@ func (s *Service) EnqueuePlain(ctx context.Context, in EnqueuePlainInput) (*Enqu
 				continue
 			}
 		}
-		if _, createErr := s.uploads.Create(ctx, upload.CreateParams{
+		if _, createErr := s.enqueueRelay(ctx, upload.CreateParams{
+			BatchID:           batchID,
+			BatchName:         "跨盘普传",
 			AccountID:         in.TargetAccountID,
 			AccountName:       in.TargetAccountName,
 			DriverType:        in.TargetDriverType,
 			FileName:          f.name,
-			SourceType:        upload.SourceTypeCrossTransfer,
 			SourceAccountID:   in.SourceAccountID,
 			SourceAccountName: in.SourceAccountName,
 			SourceDriverType:  in.SourceDriverType,
@@ -97,13 +131,21 @@ func (s *Service) EnqueuePlain(ctx context.Context, in EnqueuePlainInput) (*Enqu
 			TargetDisplayPath: in.TargetDisplayPath,
 			TotalBytes:        f.size,
 			ConflictPolicy:    conflict,
-			Phase:             upload.PhaseDownloading,
 		}); createErr != nil {
 			res.Failed++
 			res.recordFailure(f, createErr)
 			continue
 		}
+		rememberTargetName(nameCache, folderID, f.name)
 		res.Enqueued++
+	}
+	if emit != nil {
+		if err := emit(StreamEvent{
+			"event": "progress", "stage": "enqueue", "total": len(scan.files),
+			"processed": len(scan.files), "enqueued": res.Enqueued, "skipped": res.Skipped, "failed": res.Failed,
+		}); err != nil {
+			return nil, err
+		}
 	}
 
 	res.Truncated = scan.truncated
@@ -114,6 +156,12 @@ func (s *Service) EnqueuePlain(ctx context.Context, in EnqueuePlainInput) (*Enqu
 		res.Message = fmt.Sprintf("%d 个文件入队失败，首个错误：%s", res.Failed, res.FailedMessage)
 	}
 	return res, nil
+}
+
+func rememberTargetName(cache map[string]map[string]struct{}, folderID, name string) {
+	if names := cache[folderID]; names != nil {
+		names[name] = struct{}{}
+	}
 }
 
 func (r *EnqueuePlainResult) recordFailure(f plainScanFile, err error) {
@@ -181,9 +229,8 @@ type plainListOutcome struct {
 	err   error
 }
 
-// enumeratePlainSources BFS 递归枚举源目录文件（不解析指纹），
-// 目录/文件/深度上限与秒传扫描一致；目录用并发批次列举。
-func (s *Service) enumeratePlainSources(ctx context.Context, sourceAccountID int64, roots []ScanRoot) (*plainScan, error) {
+// enumeratePlainSourcesProgress BFS 枚举源目录文件，progress 回传进度，上限与秒传扫描一致。
+func (s *Service) enumeratePlainSourcesProgress(ctx context.Context, sourceAccountID int64, roots []ScanRoot, progress func(int, int) error) (*plainScan, error) {
 	acc := &plainScan{}
 	queue := make([]plainScanNode, 0, len(roots))
 	for _, source := range roots {
@@ -195,24 +242,26 @@ func (s *Service) enumeratePlainSources(ctx context.Context, sourceAccountID int
 	}
 	listedDirs := 0
 	for len(queue) > 0 && acc.truncatedReason == "" {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		remainingDirs := maxScanDirs - listedDirs
 		if remainingDirs <= 0 {
 			acc.truncated = true
 			acc.truncatedReason = fmt.Sprintf("目录数量超过 %d 个，已停止枚举，请缩小选择范围", maxScanDirs)
 			break
 		}
-		batch := queue[:min(len(queue), remainingDirs)]
-		queue = queue[len(batch):]
+		batchSize := min(len(queue), scanDirConcurrency, remainingDirs)
+		batch := queue[:batchSize]
+		queue = queue[batchSize:]
 
 		outcomes := make([]plainListOutcome, len(batch))
 		var wg sync.WaitGroup
 		for i, node := range batch {
-			wg.Add(1)
-			go func(idx int, n plainScanNode) {
-				defer wg.Done()
-				items, err := s.files.List(ctx, sourceAccountID, n.id, false)
-				outcomes[idx] = plainListOutcome{node: n, items: items, err: err}
-			}(i, node)
+			wg.Go(func() {
+				items, err := s.files.List(ctx, sourceAccountID, node.id, false)
+				outcomes[i] = plainListOutcome{node: node, items: items, err: err}
+			})
 		}
 		wg.Wait()
 
@@ -258,6 +307,11 @@ func (s *Service) enumeratePlainSources(ctx context.Context, sourceAccountID int
 			}
 			if acc.truncatedReason != "" {
 				break
+			}
+			if progress != nil {
+				if err := progress(listedDirs, len(acc.files)); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}

@@ -230,7 +230,7 @@ function onMenuSelect(key: string) {
   margin-left: 6px;
   padding: 0 4px;
   border: 1px solid rgba(237, 207, 131, 0.24);
-  border-radius: 3px;
+  border-radius: 4px;
   background: #24211c;
   color: #edcf83;
   font-size: 9px;

@@ -338,7 +338,7 @@ onActivated(() => {
     <template v-if="!bootstrap">
     <div v-if="restoreStatus.state !== 'idle'" class="restore-status" :class="`restore-status--${statusTone}`" aria-live="polite">
       <div class="restore-status__icon">
-        <SvgIcon :name="restoreStatus.state === 'restore_success' ? 'fa-database' : 'fa-exclamation-triangle'" :size="22" />
+        <SvgIcon :name="restoreStatus.state === 'restore_success' ? 'hand-database' : 'hand-exclamation-triangle'" :size="22" />
       </div>
       <div class="restore-status__content">
         <strong>
@@ -357,7 +357,7 @@ onActivated(() => {
 
     <div class="backup-entry-grid">
       <button type="button" class="backup-entry backup-entry--create" @click="openCreate">
-        <span class="backup-entry__icon"><SvgIcon name="fa-database" :size="27" /></span>
+        <span class="backup-entry__icon"><SvgIcon name="hand-database" :size="26" /></span>
         <span class="backup-entry__copy">
           <strong>创建备份</strong>
           <small>备份当前设置，可选择包含账号和任务</small>
@@ -365,7 +365,7 @@ onActivated(() => {
         <span class="backup-entry__arrow">→</span>
       </button>
       <button type="button" class="backup-entry" :disabled="hasPendingRestore" @click="openImport">
-        <span class="backup-entry__icon"><SvgIcon name="upload" :size="27" /></span>
+        <span class="backup-entry__icon"><SvgIcon name="badge-upload" :size="26" /></span>
         <span class="backup-entry__copy">
           <strong>导入备份</strong>
           <small>上传并校验保存在其他设备的 .lpb 文件</small>
@@ -427,7 +427,7 @@ onActivated(() => {
     <AppModal :open="importOpen" title="导入备份" size="sm" @close="importing ? undefined : (importOpen = false)">
       <div class="backup-form">
         <div class="selected-backup-file">
-          <SvgIcon name="fa-database" :size="22" />
+          <SvgIcon name="hand-database" :size="22" />
           <div><strong>{{ importFile?.name }}</strong><span>{{ formatSize(importFile?.size || 0) }}</span></div>
         </div>
         <FormField label="备份密码" required>
@@ -461,7 +461,7 @@ onActivated(() => {
           </span>
         </label>
         <div v-else class="bootstrap-admin-note">
-          <SvgIcon name="notify-info" :size="18" />
+          <SvgIcon name="circle-info" :size="18" />
           <span>恢复时会一并带回备份中的管理员登录信息，完成后请使用原账号登录。</span>
         </div>
       </div>
@@ -490,7 +490,7 @@ onActivated(() => {
 .backup-entry { min-width: 0; display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 18px; border: 1px solid var(--border-soft); border-radius: var(--radius-md); background: color-mix(in srgb, var(--surface) 94%, transparent); color: var(--text); text-align: left; cursor: pointer; transition: border-color .18s ease; }
 .backup-entry:hover:not(:disabled) { border-color: color-mix(in srgb, var(--brand) 38%, var(--border-soft)); }
 .backup-entry:disabled { cursor: not-allowed; opacity: .55; }
-.backup-entry__icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: 15px; color: var(--brand); background: color-mix(in srgb, var(--brand) 11%, var(--surface)); }
+.backup-entry__icon { display: grid; place-items: center; width: 48px; height: 48px; border-radius: var(--radius-lg); color: var(--brand); background: color-mix(in srgb, var(--brand) 11%, var(--surface)); }
 .backup-entry--create .backup-entry__icon { color: var(--success); background: color-mix(in srgb, var(--success) 11%, var(--surface)); }
 .backup-entry__copy { min-width: 0; display: grid; gap: 5px; }
 .backup-entry__copy strong { font-size: 15px; }
@@ -531,10 +531,8 @@ onActivated(() => {
 .backup-form__help { margin: 0; }
 .restart-progress { display: grid; place-items: center; gap: 14px; padding: 18px 8px; text-align: center; }
 .restart-progress p { margin: 0; color: var(--text-regular); font-size: 13px; line-height: 1.65; }
-.restart-progress__spinner { width: 34px; height: 34px; border: 3px solid color-mix(in srgb, var(--brand) 18%, transparent); border-top-color: var(--brand); border-radius: 50%; animation: backup-spin .8s linear infinite; }
+.restart-progress__spinner { width: 34px; height: 34px; border: 3px solid color-mix(in srgb, var(--brand) 18%, transparent); border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite; }
 .restart-progress__spinner--stopped { animation: none; border-color: var(--warning); }
-@keyframes backup-spin { to { transform: rotate(360deg); } }
-
 @media (max-width: 900px) {
   .backup-card { grid-template-columns: minmax(0, 1fr) auto; gap: 10px 14px; }
   .backup-card__scope { justify-self: end; }

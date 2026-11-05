@@ -3,14 +3,14 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import DOMPurify from "dompurify";
 import MarkdownIt from "markdown-it";
 import markdownItAnchor from "markdown-it-anchor";
-import "@fortawesome/fontawesome-free/css/all.min.css";
 import { filesApi, TEXT_PREVIEW_MAX_BYTES } from "@/api/files";
 import type { FileItem } from "@/api/types";
-import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
 import { formatSize } from "@/utils/format";
 import PreviewHeader from "./PreviewHeader.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import { decodeTextBytes, TEXT_ENCODINGS } from "@/utils/textEncoding";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import { useModalDismiss } from "@/composables/useModalDismiss";
 
 const props = defineProps<{
   accountId: number;
@@ -156,20 +156,14 @@ async function loadText() {
   }
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") emit("close");
-}
-
-useBodyScrollLock();
+useModalDismiss(() => true, () => emit("close"));
 
 onMounted(() => {
-  window.addEventListener("keydown", handleKeydown);
   void loadText();
 });
 
 onUnmounted(() => {
   controller.abort();
-  window.removeEventListener("keydown", handleKeydown);
 });
 </script>
 
@@ -191,7 +185,7 @@ onUnmounted(() => {
         </div>
 
         <div v-else-if="error" class="text-preview__state text-preview__state--error" role="alert">
-          <i class="fa-solid fa-file-circle-exclamation" aria-hidden="true" />
+          <SvgIcon name="file-circle-exclamation" size="1em" />
           <strong>无法预览这个文件</strong>
           <span>{{ error }}</span>
           <button type="button" @click="emit('download', file)">下载文件</button>
@@ -242,7 +236,7 @@ onUnmounted(() => {
             v-html="rtfHTML"
           />
           <aside v-if="isMarkdown && rendered && tocOpen" class="markdown-toc" aria-label="文档目录">
-            <header><strong>文档目录</strong><button type="button" aria-label="关闭目录" @click="tocOpen = false">×</button></header>
+            <header><strong>文档目录</strong><button type="button" aria-label="关闭目录" @click="tocOpen = false"><SvgIcon name="xmark" :size="14" /></button></header>
             <nav>
               <button
                 v-for="heading in toc"
@@ -305,7 +299,7 @@ onUnmounted(() => {
 
 .text-preview__meta span {
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   color: #8da2bd;
   background: rgb(255 255 255 / 5%);
   font-size: 10px;
@@ -318,7 +312,7 @@ onUnmounted(() => {
   min-height: 32px;
   padding: 0 12px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: #8fa2ba;
   font-size: 12px;
@@ -332,7 +326,7 @@ onUnmounted(() => {
   padding: 0 8px;
   color: #a9bad0;
   border: 1px solid rgb(145 174 216 / 16%);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   outline: none;
   background: #081425;
   font-size: 11px;
@@ -343,7 +337,7 @@ onUnmounted(() => {
   margin: 20px auto 0;
   padding: 10px 13px;
   border: 1px solid rgb(255 180 91 / 20%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   color: #ffc47a;
   background: rgb(255 164 62 / 7%);
   font-size: 12px;
@@ -411,8 +405,8 @@ onUnmounted(() => {
 .markdown-body :deep(a) { color: #60adff; text-decoration: none; }
 .markdown-body :deep(a:hover) { text-decoration: underline; }
 .markdown-body :deep(blockquote) { margin: 1em 0; padding: 0.2em 1em; color: #9fb0c6; border-left: 3px solid #2e8ce9; background: rgb(41 111 180 / 7%); }
-.markdown-body :deep(code) { padding: 0.16em 0.4em; border-radius: 5px; color: #b9d9ff; background: rgb(98 155 218 / 11%); font: 0.9em/1.6 "SFMono-Regular", Consolas, monospace; }
-.markdown-body :deep(pre) { margin: 1.1em 0; padding: 16px 18px; overflow: auto; border: 1px solid rgb(145 174 216 / 12%); border-radius: 9px; background: #030a14; }
+.markdown-body :deep(code) { padding: 0.16em 0.4em; border-radius: var(--radius-xs); color: #b9d9ff; background: rgb(98 155 218 / 11%); font: 0.9em/1.6 "SFMono-Regular", Consolas, monospace; }
+.markdown-body :deep(pre) { margin: 1.1em 0; padding: 16px 18px; overflow: auto; border: 1px solid rgb(145 174 216 / 12%); border-radius: var(--radius-sm); background: #030a14; }
 .markdown-body :deep(pre code) { padding: 0; color: #d2deed; background: transparent; }
 .markdown-body :deep(hr) { height: 1px; margin: 2em 0; border: 0; background: rgb(145 174 216 / 18%); }
 .markdown-body :deep(table) { width: 100%; margin: 1em 0; border-collapse: collapse; }
@@ -429,39 +423,30 @@ onUnmounted(() => {
   max-height: calc(100dvh - 164px);
   overflow: hidden;
   border: 1px solid rgb(145 174 216 / 18%);
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   background: rgb(4 13 27 / 94%);
   box-shadow: 0 18px 55px rgb(0 0 0 / 36%);
   backdrop-filter: blur(16px);
 }
 .markdown-toc header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid rgb(145 174 216 / 13%); }
 .markdown-toc header strong { font-size: 13px; }
-.markdown-toc header button { width: 28px; height: 28px; border: 0; border-radius: 6px; background: transparent; font-size: 20px; }
+.markdown-toc header button { width: 28px; height: 28px; border: 0; border-radius: var(--radius-xs); background: transparent; font-size: 20px; }
 .markdown-toc header button:hover { background: rgb(255 255 255 / 8%); }
 .markdown-toc nav { max-height: calc(100dvh - 220px); padding: 6px; overflow: auto; }
-.markdown-toc nav button { width: 100%; min-height: 34px; padding-right: 10px; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; color: #aebed2; border: 0; border-radius: 6px; background: transparent; font-size: 12px; }
+.markdown-toc nav button { width: 100%; min-height: 34px; padding-right: 10px; overflow: hidden; text-align: left; text-overflow: ellipsis; white-space: nowrap; color: #aebed2; border: 0; border-radius: var(--radius-xs); background: transparent; font-size: 12px; }
 .markdown-toc nav button:hover { color: #fff; background: rgb(40 137 239 / 13%); }
 
 .text-preview__state {
   position: absolute;
-  left: 50%;
   top: 46%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 10px;
   background: rgb(5 14 28 / 88%);
-  box-shadow: 0 18px 55px rgb(0 0 0 / 34%);
 }
 
 .text-preview__state strong { font-size: 13px; font-weight: 550; }
 .text-preview__state--error { width: min(440px, calc(100vw - 32px)); flex-direction: column; text-align: center; padding: 24px; }
-.text-preview__state--error > i { color: #ffb45e; font-size: 30px; }
+.text-preview__state--error > i, .text-preview__state--error > .lp-svg-icon { color: #ffb45e; font-size: 30px; }
 .text-preview__state--error span { color: #9eb0c8; font-size: 13px; line-height: 1.7; }
-.text-preview__state--error button { margin-top: 4px; padding: 9px 18px; border: 1px solid #268bff; border-radius: 8px; background: #187ce0; font-weight: 650; }
+.text-preview__state--error button { margin-top: 4px; padding: 9px 18px; border: 1px solid #268bff; border-radius: var(--radius-sm); background: #187ce0; font-weight: 650; }
 
 @media (max-width: 760px) {
   .text-preview__stage { inset: 58px 0 0; padding-bottom: 30px; }

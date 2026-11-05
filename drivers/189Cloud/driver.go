@@ -54,6 +54,7 @@ var config = driver.Config{
 	ProvideHashes:          []string{"md5"},
 	RapidUploadHashes:      []string{"md5"},
 	UploadConflictPolicies: []string{"overwrite", "rename", "skip", "fail"},
+	InternalExperimental:   true,
 }
 
 func New() driver.Driver { return &Driver{} }
@@ -80,11 +81,7 @@ func (d *Driver) Init(ctx context.Context) error {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 30 * time.Second})
 	}
 	if d.uploadClient == nil {
-		d.uploadClient = httpx.NewClient(httpx.ClientOptions{
-			Timeout:            300 * time.Second,
-			DisableCompression: true,
-			DisableKeepAlives:  true,
-		})
+		d.uploadClient = httpx.NewUploadClient(d.client, 60*time.Second, config.UploadUseHTTP2)
 	}
 	d.mu.Lock()
 	if d.accessToken == "" {
@@ -191,6 +188,9 @@ func (d *Driver) ListFiles(ctx context.Context, parentID string) ([]domain.FileI
 		for _, f := range resp.FileListAO.FolderList {
 			f.isDir = true
 			item := f.toFileItem()
+			if !d.isFamily() && item.ID == "0" {
+				item.ID = syncRootID
+			}
 			out = append(out, item)
 			count++
 		}
@@ -210,6 +210,9 @@ func (d *Driver) ListFiles(ctx context.Context, parentID string) ([]domain.FileI
 
 func (d *Driver) GetFileInfo(ctx context.Context, fileID string) (*domain.FileItem, error) {
 	id := strings.TrimSpace(fileID)
+	if !d.isFamily() && id == syncRootID {
+		return &domain.FileItem{ID: syncRootID, Name: "同步盘", IsDir: true, IDKind: domain.IDStable}, nil
+	}
 	if id == "" || id == "/" || id == d.rootID() || (d.isFamily() && id == "-11") {
 		return &domain.FileItem{
 			ID:     d.rootID(),

@@ -61,7 +61,7 @@ func (m *Manager) stopTaskForDelete(ctx context.Context, taskID string) error {
 		m.mu.Unlock()
 		return nil
 	}
-	active := st.Status == StatusPending || st.Status == StatusRunning
+	active := isActiveUploadStatus(st.Status)
 	if !active && st.cancel == nil {
 		m.mu.Unlock()
 		return nil

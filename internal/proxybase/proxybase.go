@@ -1,13 +1,13 @@
-// Package proxybase 提供 Emby / 飞牛影视反代共用的只读辅助：
-// STRM play URL 解析、URL/端口规范化、hop-by-hop 头集合与超时常量。
+// Package proxybase 提供 Emby / 飞牛影视反代共用的只读辅助：STRM play URL 解析、URL 规范化与超时常量。
 package proxybase
 
 import (
 	"bytes"
+	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -17,34 +17,69 @@ import (
 )
 
 // StrmPlayPathRE 匹配 LitePan STRM play URL（与 internal/strm 播放链接格式一致）。
-var StrmPlayPathRE = regexp.MustCompile(`(?i)^/api/strm/play/(\d+)/([^/]+)/t/([^/]+)/n/([^/?#\s]+)(?:/s/([^/?#\s]+))?$`)
+var StrmPlayPathRE = strm.PlayPathRE
 
-// HopByHopHeaderNames 是反向代理转发时需剥离的 hop-by-hop 头。
+// StrmPathPlayPathRE 匹配延迟按路径解析的 LitePan STRM URL。
+var StrmPathPlayPathRE = strm.PathPlayPathRE
+
+type STRMReference = strm.PlayReference
+
+// ParseLitePanSTRMReference 同时解析文件 ID 与路径两种 STRM 地址。
+func ParseLitePanSTRMReference(value string) (STRMReference, bool) {
+	return strm.ParsePlayReference(value)
+}
+
+func IsLitePanSTRMPath(value string) bool {
+	pathValue := LitePanPath(value)
+	return StrmPlayPathRE.MatchString(pathValue) || StrmPathPlayPathRE.MatchString(pathValue)
+}
+
+// HopByHopHeaderNames 是转发时需剥离的 hop-by-hop 头；升级请求要保留 connection/upgrade。
 var HopByHopHeaderNames = map[string]struct{}{
 	"connection": {}, "keep-alive": {}, "proxy-authenticate": {}, "proxy-authorization": {},
 	"te": {}, "trailers": {}, "transfer-encoding": {}, "upgrade": {}, "host": {},
 }
 
+// IsUpgradeRequest 判断是否为 HTTP 升级请求（WebSocket 等）。
+func IsUpgradeRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	return strings.TrimSpace(r.Header.Get("Upgrade")) != ""
+}
+
+// NewUpgradeProxy 构造升级请求（WebSocket）用的反向代理，靠 Go 原生 ReverseProxy 保留 Upgrade/Connection
+// 并在上游返回 101 时 Hijack 做双向转发；target 需含完整路径与 query，transport 为 nil 时用默认。
+func NewUpgradeProxy(target *url.URL, transport http.RoundTripper, log *slog.Logger) *httputil.ReverseProxy {
+	if target == nil {
+		return nil
+	}
+	return &httputil.ReverseProxy{
+		Transport: transport,
+		// -1 表示不缓冲，立即回写（升级隧道必须逐字节转发）。
+		FlushInterval: -1,
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			out := pr.Out
+			// 直接设定上游地址：不能走 SetURL，否则会把请求路径再拼一次。
+			out.URL.Scheme = target.Scheme
+			out.URL.Host = target.Host
+			out.URL.Path = target.Path
+			out.URL.RawPath = target.RawPath
+			out.URL.RawQuery = target.RawQuery
+			out.Host = target.Host
+			pr.SetXForwarded()
+		},
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if log != nil {
+				log.Warn("反代升级请求失败", "path", r.URL.Path, "error", err)
+			}
+			w.WriteHeader(http.StatusBadGateway)
+		},
+	}
+}
+
 // TestRequestTimeout 是反代连通性测试的上游请求超时。
 const TestRequestTimeout = 20 * time.Second
-
-// ParseLitePanSTRMURL 从 STRM play URL 解析账号 ID 与网盘 file_id。
-func ParseLitePanSTRMURL(value string) (int64, string, bool) {
-	path := LitePanPath(value)
-	m := StrmPlayPathRE.FindStringSubmatch(path)
-	if len(m) < 3 {
-		return 0, "", false
-	}
-	accountID, err := strconv.ParseInt(m[1], 10, 64)
-	if err != nil || accountID <= 0 {
-		return 0, "", false
-	}
-	fileID, err := strm.DecodeFileKey(m[2])
-	if err != nil || fileID == "" {
-		return 0, "", false
-	}
-	return accountID, fileID, true
-}
 
 // LitePanPath 从 STRM 播放地址中提取路径部分（去掉 host 与 query）。
 func LitePanPath(value string) string {
@@ -163,8 +198,7 @@ func MatchesClientKeywords(r *http.Request, value string) bool {
 	return MatchesClientText(value, EmbyClientName(r), r.UserAgent())
 }
 
-// MatchesClientText 判断一组客户端标识文本是否命中关键字列表。
-// 用于只拿得到 User-Agent、无法访问完整 HTTP 请求的播放解析钩子。
+// MatchesClientText 判断客户端标识文本是否命中关键字，用于只拿得到 User-Agent 的解析钩子。
 func MatchesClientText(value string, candidates ...string) bool {
 	haystack := strings.ToLower(strings.Join(candidates, "\n"))
 	for _, keyword := range splitClientKeywords(value) {

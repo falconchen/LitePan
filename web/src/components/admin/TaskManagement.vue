@@ -33,6 +33,7 @@ import {
   type StrmBranch,
   type StrmAccountRepairPrecheck,
   type StrmRunMode,
+  type StrmSettings,
   type StrmTask,
   type StrmTaskInput,
 } from "@/api/strm";
@@ -46,8 +47,8 @@ import AppStateBlock from "@/components/base/AppStateBlock.vue";
 import TimeWindowField from "@/components/base/TimeWindowField.vue";
 import SettingsSegment from "@/components/admin/SettingsSegment.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
-import AdminTaskTabHeader from "@/components/admin/AdminTaskTabHeader.vue";
-import type { AdminTaskTabStat } from "@/components/admin/adminTaskTabHeader";
+import StrmSignalBand from "@/components/admin/StrmSignalBand.vue";
+import OrganizeSignalBand from "@/components/admin/OrganizeSignalBand.vue";
 // StrmSettingsPanel 保持常驻挂载：新建 STRM 任务的默认扫描间隔依赖它加载的设置。
 import StrmSettingsPanel from "@/components/admin/StrmSettingsPanel.vue";
 import AdminEmptyState from "@/components/admin/AdminEmptyState.vue";
@@ -60,6 +61,7 @@ import type { AdminRunStatusVariant } from "@/components/admin/adminRunStatus";
 import AdminTableActionBtn from "@/components/admin/AdminTableActionBtn.vue";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import SectionTabBar from "@/components/admin/SectionTabBar.vue";
+import BandMenuButton from "@/components/admin/band/BandMenuButton.vue";
 import FolderPickerModal from "@/components/file/FolderPickerModal.vue";
   // 重面板仅在对应 Tab 或抽屉首次打开时加载。
 import type CacheRetentionPanelComponent from "@/components/admin/CacheRetentionPanel.vue";
@@ -69,10 +71,13 @@ const CacheSettingsPanel = defineAsyncComponent(() => import("@/components/admin
 const AutomationPanel = defineAsyncComponent(() => import("@/components/admin/AutomationPanel.vue"));
 const MediaOrganizePanel = defineAsyncComponent(() => import("@/components/admin/MediaOrganizePanel.vue"));
 const MediaOrganizeSettings = defineAsyncComponent(() => import("@/components/admin/MediaOrganizeSettings.vue"));
-import CacheRuntimeStats from "@/components/admin/CacheRuntimeStats.vue";
+import CacheSignalBand from "@/components/admin/CacheSignalBand.vue";
 import AdminSettingsDrawer from "@/components/admin/AdminSettingsDrawer.vue";
 import { useAccountPathLabel } from "@/composables/useAccountPathLabel";
 import { useAdminPageLoading } from "@/composables/useAdminLoadingBar";
+import { isStrmTaskEnabled, isStrmTaskScanning, useStrmScanPlan } from "@/composables/useStrmScanPlan";
+import { useBandVisible } from "@/composables/useBandVisible";
+import { collapseBand, expandBand } from "@/utils/bandTransition";
 import { useConditionalPolling } from "@/composables/useConditionalPolling";
 import { findDustTarget, useDustRemoval } from "@/composables/useDustRemoval";
 import { liveElapsedMs, useLiveElapsedClock } from "@/composables/useLiveElapsedClock";
@@ -117,6 +122,9 @@ const drawerKindsVisited = reactive<Record<DrawerKind, boolean>>({
 });
 
 const retentionPanelRef = ref<InstanceType<typeof CacheRetentionPanelComponent> | null>(null);
+const cacheBandRef = ref<InstanceType<typeof CacheSignalBand> | null>(null);
+// 缓存页顶部仪表带的任务统计，由 CacheRetentionPanel 上报。
+const cacheTaskStats = ref({ total: 0, enabled: 0, error: 0 });
 const cacheSettingsRef = ref<SettingsPanelExpose | null>(null);
 const strmSettingsRef = ref<SettingsPanelExpose | null>(null);
 const organizePanelRef = ref<InstanceType<typeof MediaOrganizePanelComponent> | null>(null);
@@ -266,25 +274,52 @@ const form = reactive(emptyForm());
 
 const activeAccounts = computed(() => accounts.value.filter((a) => a.is_active));
 
-const enabledCount = computed(() => tasks.value.filter((t) => isTaskEnabled(t)).length);
+// 信息面板（仪表带）显示/隐藏：按页签持久化；隐藏后可从 tab 栏的 ☰ 菜单叫回来。
+const { hidden: bandHidden, hide: hideBand, show: showBand } = useBandVisible(activeTab);
+
+// 隐藏时把面板「收进」tab 栏右侧的 ☰ 位置；再点 ☰ 反向展开。
+function visibleBandElement(): HTMLElement | null {
+  const list = Array.from(document.querySelectorAll<HTMLElement>(".signal-band"));
+  return list.find((el) => el.offsetParent !== null) ?? list[0] ?? null;
+}
+
+async function handleHideBand(event?: MouseEvent) {
+  const host = (event?.currentTarget as HTMLElement | undefined)?.closest<HTMLElement>(".signal-band") ?? visibleBandElement();
+  await collapseBand(host);
+  hideBand();
+  toast.info("已隐藏信息面板，可从 ☰ 恢复");
+}
+
+async function handleShowBand() {
+  showBand();
+  await nextTick();
+  await expandBand(visibleBandElement());
+}
+
+const enabledCount = computed(() => tasks.value.filter((t) => isStrmTaskEnabled(t)).length);
 const errorCount = computed(() => tasks.value.filter((t) => t.status === "error").length);
 
-const strmTabStats = computed<AdminTaskTabStat[]>(() => [
-  { icon: "fa-list", value: tasks.value.length, label: "任务总数", tone: "blue" },
-  { icon: "fa-play", value: enabledCount.value, label: "已启用", tone: "purple" },
-  { icon: "fa-pause", value: errorCount.value, label: "异常", tone: "amber" },
-]);
+const strmSettingsSummary = ref<StrmSettings | null>(null);
+const strmSettingsSummaryLoading = ref(false);
+const {
+  scanningCount: strmScanningCount,
+  scanSuccessRate: strmScanSuccessRate,
+  planItems: strmPlanItems,
+  nextRunAt: strmNextRunAt,
+  nextRunTask: strmNextRunTask,
+} = useStrmScanPlan(tasks);
 
-const organizeTabStats = computed<AdminTaskTabStat[]>(() => [
-  { icon: "fa-list", value: organizePanelRef.value?.taskCount ?? 0, label: "任务数量", tone: "blue" },
-  { icon: "fa-play", value: organizePanelRef.value?.runningCount ?? 0, label: "执行中", tone: "purple" },
-  {
-    icon: "fa-pause",
-    value: organizePanelRef.value?.errorTaskCount ?? 0,
-    label: "有失败",
-    tone: "amber",
-  },
-]);
+// 目录整理页仪表带的统计与产出，由 MediaOrganizePanel 上报。
+const organizeTaskStats = ref({
+  total: 0,
+  running: 0,
+  error: 0,
+  organized: 0,
+  skipped: 0,
+  lastRunLabel: "尚未执行",
+  successRate: null as number | null,
+});
+const organizeBandRef = ref<InstanceType<typeof OrganizeSignalBand> | null>(null);
 
 const drawerTitle = computed(() => {
   if (drawerKind.value === "organize") return "整理设置";
@@ -303,8 +338,10 @@ const metadataSyncOptions = [
   { value: "true", label: "开启" },
 ];
 
+const STRM_TASKS_POLL_MS = 3000;
+
 const tasksPolling = useConditionalPolling({
-  intervalMs: 3000,
+  intervalMs: STRM_TASKS_POLL_MS,
   tickWhen: () => activeTab.value === STRM_TAB,
   onTick: () => loadTasks(true),
   shouldPoll: () => activeTab.value === STRM_TAB && (hasScanningTasks() || tasksPolling.isActive()),
@@ -396,15 +433,24 @@ async function openSettingsDrawer(kind?: DrawerKind) {
   }
 }
 
+/** ☰ 菜单第二项的文案：跟着当前 tab 走（只显示本页自己的设置）。 */
+const bandSettingsLabel = computed(() =>
+  activeTab.value === CACHE_TAB ? "打开缓存设置" : activeTab.value === ORGANIZE_TAB ? "打开整理设置" : "打开STRM设置",
+);
+
 async function closeSettingsDrawer() {
   if (!(await confirmDiscardChanges(() => drawerDirty.value))) return;
   settingsDrawerOpen.value = false;
+  if (drawerKind.value === "cache") void cacheBandRef.value?.reloadSettings?.();
+  if (drawerKind.value === "organize") void organizeBandRef.value?.reloadSettings?.();
 }
 
 async function handleDrawerSave() {
   if (drawerKind.value === "strm") await strmSettingsRef.value?.save?.();
   else if (drawerKind.value === "cache") await cacheSettingsRef.value?.save?.();
   else await organizeSettingsRef.value?.save?.();
+  if (drawerKind.value === "cache") void cacheBandRef.value?.reloadSettings?.();
+  if (drawerKind.value === "organize") void organizeBandRef.value?.reloadSettings?.();
 }
 
 const { timeWindowDisplay, timePickerMode, onTimeWheelConfirm } = useTimeWindowSchedule(form, {
@@ -427,10 +473,6 @@ const { display: sourceDirDisplay, title: sourceDirTitle } = useAccountPathLabel
   accounts,
   showLeafOnly: true,
 });
-
-function isTaskEnabled(task: StrmTask): boolean {
-  return task.status === "active" || task.status === "running";
-}
 
 function formatFileCount(count: number): string {
   if (!count) return "0";
@@ -456,12 +498,8 @@ function isMetadataScanPhase(task: StrmTask): boolean {
   return task.scan_phase !== undefined && task.scan_phase !== "scanning";
 }
 
-function isTaskScanning(task: StrmTask): boolean {
-  return Boolean(task.is_scanning);
-}
-
 function scanElapsedText(task: StrmTask): string {
-  if (!isTaskScanning(task)) return "";
+  if (!isStrmTaskScanning(task)) return "";
   void elapsedClock.tick.value;
   const fromStart = liveElapsedMs(task.started_at, elapsedClock.tick.value);
   if (fromStart > 0) return formatElapsedMs(fromStart);
@@ -483,14 +521,14 @@ function formatLastScan(value?: string): string {
 }
 
 function scanStatusVariant(task: StrmTask): AdminRunStatusVariant {
-  if (isTaskScanning(task)) return "running";
+  if (isStrmTaskScanning(task)) return "running";
   if (task.last_scan_status === "ok" || task.last_scan_status === "success") return "success";
   if (task.last_scan_status === "failed" || task.last_scan_status === "error" || task.last_scan_status === "protected") return "error";
   return "pending";
 }
 
 function lastScanPrimaryText(task: StrmTask): string {
-  if (isTaskScanning(task)) {
+  if (isStrmTaskScanning(task)) {
     const phase = scanPhasePrimaryText(task);
     const label = task.current_label?.trim();
     if (label) return `${phase} — ${label}`;
@@ -500,7 +538,7 @@ function lastScanPrimaryText(task: StrmTask): string {
 }
 
 function lastScanSummary(task: StrmTask): string {
-  if (isTaskScanning(task)) {
+  if (isStrmTaskScanning(task)) {
     const parts: string[] = [];
     if (isMetadataScanPhase(task)) {
       const total = Number(task.metadata_total || 0);
@@ -545,7 +583,7 @@ function lastScanTitle(task: StrmTask): string {
 }
 
 function hasScanningTasks(): boolean {
-  return tasks.value.some((t) => isTaskScanning(t));
+  return tasks.value.some((t) => isStrmTaskScanning(t));
 }
 
 function syncTasksPolling() {
@@ -613,7 +651,7 @@ function openCreate() {
 }
 
 function openEdit(task: StrmTask) {
-  if (isTaskScanning(task)) {
+  if (isStrmTaskScanning(task)) {
     toast.info("当前任务正在进行，请停止后再修改设置");
     return;
   }
@@ -726,20 +764,7 @@ async function runStrmRepairCheck() {
   }
 }
 
-async function skipStrmRepairAndCreate() {
-  const body = pendingCreateBody.value;
-  if (!body) return;
-  submitting.value = true;
-  try {
-    await finishCreateTask(body);
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "创建任务失败"));
-  } finally {
-    submitting.value = false;
-  }
-}
-
-async function confirmAfterStrmRepair() {
+async function finishPendingTaskCreate() {
   const body = pendingCreateBody.value;
   if (!body) return;
   submitting.value = true;
@@ -802,7 +827,7 @@ async function submitTask() {
 
 async function setTaskEnabled(task: StrmTask, enabled: boolean) {
   if (!task.id) return;
-  if (enabled === isTaskEnabled(task)) return;
+  if (enabled === isStrmTaskEnabled(task)) return;
   try {
     const updated = await toggleStrmTask(task.id);
     const idx = tasks.value.findIndex((t) => t.id === task.id);
@@ -935,7 +960,7 @@ function closeBranchDialog() {
   resetBranchForm();
 }
 
-async function onBranchFolderPicked(payload: { accountId: number; parentId: string; path: string }) {
+async function onBranchFolderPicked(payload: { accountId: number; parentId: string; path: string; dirs?: string[] }) {
   if (!branchTask.value?.id) return;
   const taskPath = (branchTask.value.path || "/").replace(/\/+$/, "") || "/";
   const picked = (payload.path || "/").replace(/\/+$/, "") || "/";
@@ -951,6 +976,7 @@ async function onBranchFolderPicked(payload: { accountId: number; parentId: stri
       account_id: branchTask.value.account_id,
       parent_id: payload.parentId,
       path: picked,
+      relative_dirs: payload.dirs ?? [],
       branch_type: branchType,
       recursive: branchType === "temporary",
       retention_days: branchType === "temporary" ? 30 : 0,
@@ -1049,6 +1075,12 @@ watch(activeTab, (tab) => {
   <div class="settings strm-page">
     <SectionTabBar :model-value="activeTab" :tabs="tabs" @update:model-value="setActiveTab">
       <template #actions>
+        <BandMenuButton
+          v-if="bandHidden"
+          :settings-label="bandSettingsLabel"
+          @show-panel="handleShowBand"
+          @open-settings="openSettingsDrawer()"
+        />
         <AppButton
           v-if="activeTab === CACHE_TAB"
           type="button"
@@ -1080,31 +1112,42 @@ watch(activeTab, (tab) => {
     </SectionTabBar>
 
     <div v-if="tabsVisited[CACHE_TAB]" v-show="activeTab === CACHE_TAB">
-      <AdminTaskTabHeader
-        settings-title="缓存设置"
-        settings-hint="通用缓存 · WebDAV"
-        @open-settings="openSettingsDrawer('cache')"
-      >
-        <CacheRuntimeStats />
-      </AdminTaskTabHeader>
-      <CacheRetentionPanel ref="retentionPanelRef" hide-stats />
+      <div class="cache-task-panel">
+        <CacheSignalBand
+          v-if="!bandHidden"
+          ref="cacheBandRef"
+          :task-total="cacheTaskStats.total"
+          :task-enabled="cacheTaskStats.enabled"
+          :task-error="cacheTaskStats.error"
+          @open-settings="openSettingsDrawer('cache')"
+          @dismiss="handleHideBand"
+        />
+        <CacheRetentionPanel ref="retentionPanelRef" @stats="cacheTaskStats = $event" />
+      </div>
     </div>
 
     <div v-show="activeTab === STRM_TAB" class="strm-task-panel">
-      <AdminTaskTabHeader
-        :stats="strmTabStats"
-        :refreshing="refreshing"
-        settings-title="STRM 设置"
-        settings-hint="扫描规则 · 播放地址"
-        @refresh="loadTasks()"
+      <StrmSignalBand
+        v-if="!bandHidden"
+        :total="tasks.length"
+        :enabled="enabledCount"
+        :error="errorCount"
+        :scanning="strmScanningCount"
+        :scan-success-rate="strmScanSuccessRate"
+        :plan-items="strmPlanItems"
+        :next-run-at="strmNextRunAt"
+        :next-run-task="strmNextRunTask"
+        :settings="strmSettingsSummary"
+        :settings-loading="strmSettingsSummaryLoading"
         @open-settings="openSettingsDrawer('strm')"
+        @dismiss="handleHideBand"
       />
 
       <AdminStartupBanner :seconds="startupRemainingDisplay" />
 
       <AdminEmptyState
         v-if="strmListReady && !refreshing && !tasks.length"
-        icon="🎬"
+        icon="hand-play"
         title="还没有 STRM 任务"
         description="添加任务后，系统会定期扫描网盘目录并生成本地 .strm 播放链接文件。"
       >
@@ -1127,8 +1170,8 @@ watch(activeTab, (tab) => {
                 <div class="strm-task-main" :title="task.name">
                   <div class="strm-task-name">
                     <span class="strm-task-name__text">{{ displayTaskName(task.name) }}</span>
-                    <AdminStatusPill :tone="isTaskEnabled(task) ? 'success' : 'warning'">
-                      {{ isTaskEnabled(task) ? "已启用" : "已禁用" }}
+                    <AdminStatusPill :tone="isStrmTaskEnabled(task) ? 'success' : 'warning'">
+                      {{ isStrmTaskEnabled(task) ? "已启用" : "已禁用" }}
                     </AdminStatusPill>
                   </div>
                 </div>
@@ -1140,20 +1183,20 @@ watch(activeTab, (tab) => {
                   :primary="lastScanPrimaryText(task)"
                   :summary="lastScanSummary(task)"
                   :variant="scanStatusVariant(task)"
-                  :live="isTaskScanning(task)"
-                  :primary-tone="isTaskScanning(task) ? 'default' : 'muted'"
+                  :live="isStrmTaskScanning(task)"
+                  :primary-tone="isStrmTaskScanning(task) ? 'default' : 'muted'"
                 />
               </td>
               <td class="admin-table__actions">
                 <AdminRowActions>
                   <div class="strm-task-actions">
                     <AdminEnableToggle
-                      :enabled="isTaskEnabled(task)"
+                      :enabled="isStrmTaskEnabled(task)"
                       aria-label="任务启用切换"
                       @enable="setTaskEnabled(task, $event)"
                     />
                     <AdminTableActionBtn
-                      v-if="isTaskScanning(task)"
+                      v-if="isStrmTaskScanning(task)"
                       icon="stop"
                       title="强制停止"
                       danger
@@ -1178,12 +1221,12 @@ watch(activeTab, (tab) => {
                     <button
                       type="button"
                       class="admin-row-actions__item"
-                      @click="setTaskEnabled(task, !isTaskEnabled(task))"
+                      @click="setTaskEnabled(task, !isStrmTaskEnabled(task))"
                     >
-                      {{ isTaskEnabled(task) ? "禁用任务" : "启用任务" }}
+                      {{ isStrmTaskEnabled(task) ? "禁用任务" : "启用任务" }}
                     </button>
                     <button
-                      v-if="isTaskScanning(task)"
+                      v-if="isStrmTaskScanning(task)"
                       type="button"
                       class="admin-row-actions__item admin-row-actions__item--danger"
                       @click="handleForceStop(task)"
@@ -1219,15 +1262,24 @@ watch(activeTab, (tab) => {
     </div>
 
     <div v-if="tabsVisited[ORGANIZE_TAB]" v-show="activeTab === ORGANIZE_TAB">
-      <AdminTaskTabHeader
-        :stats="organizeTabStats"
-        :refreshing="organizePanelRef?.refreshing ?? false"
-        settings-title="整理设置"
-        settings-hint="TMDB · 命名规则"
-        @refresh="organizePanelRef?.loadTasks()"
-        @open-settings="openSettingsDrawer('organize')"
-      />
-      <MediaOrganizePanel ref="organizePanelRef" hide-stats />
+      <div class="organize-task-panel">
+        <OrganizeSignalBand
+          v-if="!bandHidden"
+          ref="organizeBandRef"
+          :task-total="organizeTaskStats.total"
+          :task-running="organizeTaskStats.running"
+          :task-error="organizeTaskStats.error"
+          :organized-count="organizeTaskStats.organized"
+          :skipped-count="organizeTaskStats.skipped"
+          :last-run-at="organizeTaskStats.lastRunLabel"
+          :success-rate="organizeTaskStats.successRate"
+          :refresh-pending="organizePanelRef?.refreshing ?? false"
+          @refresh="organizePanelRef?.loadTasks()"
+          @open-settings="openSettingsDrawer('organize')"
+          @dismiss="handleHideBand"
+        />
+        <MediaOrganizePanel ref="organizePanelRef" @stats="organizeTaskStats = $event" />
+      </div>
     </div>
 
     <div v-if="tabsVisited[AUTOMATION_TAB]" v-show="activeTab === AUTOMATION_TAB">
@@ -1243,7 +1295,12 @@ watch(activeTab, (tab) => {
       @cancel="closeSettingsDrawer"
       @save="handleDrawerSave"
     >
-      <StrmSettingsPanel v-show="drawerKind === 'strm'" ref="strmSettingsRef" />
+      <StrmSettingsPanel
+        v-show="drawerKind === 'strm'"
+        ref="strmSettingsRef"
+        @updated="strmSettingsSummary = $event"
+        @loading="strmSettingsSummaryLoading = $event"
+      />
       <CacheSettingsPanel v-if="drawerKindsVisited.cache" v-show="drawerKind === 'cache'" ref="cacheSettingsRef" />
       <MediaOrganizeSettings v-if="drawerKindsVisited.organize" v-show="drawerKind === 'organize'" ref="organizeSettingsRef" />
     </AdminSettingsDrawer>
@@ -1370,7 +1427,7 @@ watch(activeTab, (tab) => {
               输出目录「{{ pendingCreateBody?.output_folder }}」已存在，是否检测与当前账号能否关联？
             </p>
             <div class="strm-repair-panel__actions">
-              <AppButton type="button" variant="secondary" :disabled="submitting" @click="skipStrmRepairAndCreate">
+              <AppButton type="button" variant="secondary" :disabled="submitting" @click="finishPendingTaskCreate">
                 忽略，直接创建
               </AppButton>
               <AppButton type="button" variant="primary" @click="runStrmRepairCheck">检测，尝试关联</AppButton>
@@ -1378,7 +1435,7 @@ watch(activeTab, (tab) => {
           </div>
 
           <div v-else-if="strmRepairPhase === 'loading'" class="strm-repair-loading">
-            <BusySpinner variant="notch" :size="42" color="var(--brand)" />
+            <BusySpinner variant="notch" :size="40" color="var(--brand)" />
             <div class="strm-repair-loading__title">{{ strmRepairLoadingTitle }}</div>
           </div>
 
@@ -1394,7 +1451,7 @@ watch(activeTab, (tab) => {
                 type="button"
                 variant="primary"
                 :disabled="submitting"
-                @click="confirmAfterStrmRepair"
+                @click="finishPendingTaskCreate"
               >
                 {{ submitting ? "处理中…" : strmRepairResult?.ok ? "确定" : "仍要创建" }}
               </AppButton>
@@ -1545,14 +1602,12 @@ watch(activeTab, (tab) => {
   padding-bottom: 24px;
 }
 
-.strm-task-panel {
+.strm-task-panel,
+.cache-task-panel,
+.organize-task-panel {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.strm-task-panel :deep(.admin-stats-grid) {
-  margin-bottom: 0;
 }
 
 .strm-task-table-wrap {
@@ -1675,7 +1730,7 @@ watch(activeTab, (tab) => {
   min-width: 112px;
   padding: 6px;
   border: 1px solid var(--border-soft);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   box-shadow: var(--shadow-pop);
   opacity: 0;
@@ -1697,7 +1752,7 @@ watch(activeTab, (tab) => {
   width: 100%;
   box-sizing: border-box;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -1900,7 +1955,7 @@ watch(activeTab, (tab) => {
   flex-shrink: 0;
   width: 28px;
   height: 16px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--border-soft);
   transition: background 0.2s ease;
 }
@@ -2046,7 +2101,7 @@ watch(activeTab, (tab) => {
 .strm-branch-column__badge {
   min-width: 22px;
   padding: 0 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--brand) 12%, var(--surface));
   color: var(--brand);
   font-size: 12px;
@@ -2066,7 +2121,7 @@ watch(activeTab, (tab) => {
 
 .strm-branch-column__meta {
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--brand) 10%, transparent);
   color: var(--brand);
   font-weight: 500;

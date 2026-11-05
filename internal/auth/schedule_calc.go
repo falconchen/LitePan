@@ -2,11 +2,20 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"litepan/internal/domain"
 	"litepan/internal/driver"
 )
+
+type refreshSchedule struct {
+	accountID  int64
+	name       string
+	driverType string
+	status     domain.AuthStatus
+	next       time.Time
+}
 
 func (s *Service) ensureSchedule(ctx context.Context, accountID int64) {
 	if s.accounts == nil || s.authStates == nil {
@@ -38,20 +47,46 @@ func (s *Service) ensureSchedule(ctx context.Context, accountID int64) {
 
 // calcNextCheck 计算账号下次主动检查时间。
 func (s *Service) calcNextCheck(ctx context.Context, accountID int64, now time.Time, firstBoot bool) time.Time {
+	return s.refreshSchedule(ctx, accountID, now, firstBoot).next
+}
+
+// refreshSchedules 在一轮调度中只读取一次账号、驱动配置和认证状态。
+func (s *Service) refreshSchedules(ctx context.Context, now time.Time, firstBoot bool) []refreshSchedule {
+	ids := s.managedIDs()
+	out := make([]refreshSchedule, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, s.refreshSchedule(ctx, id, now, firstBoot))
+	}
+	return out
+}
+
+func (s *Service) refreshSchedule(ctx context.Context, accountID int64, now time.Time, firstBoot bool) refreshSchedule {
+	plan := refreshSchedule{
+		accountID: accountID,
+		name:      fmt.Sprintf("账号%d", accountID),
+		status:    domain.AuthActive,
+		next:      now.Add(time.Hour),
+	}
 	acc, err := s.accounts.Get(ctx, accountID)
 	if err != nil {
-		return now.Add(time.Hour)
+		return plan
 	}
+	plan.name = acc.Name
+	plan.driverType = acc.DriverType
 	drv, ok := driver.New(acc.DriverType)
 	if !ok {
-		return now.Add(time.Hour)
+		return plan
 	}
-	cfg := drv.Config()
 	st, err := s.loadState(ctx, accountID)
 	if err != nil {
-		return now.Add(time.Hour)
+		return plan
 	}
+	plan.status = st.Status
+	plan.next = nextCheck(drv.Config(), st, now, firstBoot)
+	return plan
+}
 
+func nextCheck(cfg driver.Config, st *domain.AuthState, now time.Time, firstBoot bool) time.Time {
 	switch st.Status {
 	case domain.AuthFailed, domain.AuthTokenExpired:
 		if !st.NextRetryAt.IsZero() {

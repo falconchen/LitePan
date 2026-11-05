@@ -15,6 +15,7 @@ type deferredGroup struct {
 	alignDefaults map[bucketKey]map[string]any
 	request       recognition.Work
 	fileIndexes   map[string]int
+	sourceIDs     []string
 	matchReason   string
 	skipReason    string
 	fallbackMatch *tmdbMatchResult
@@ -42,9 +43,11 @@ func (p *Planner) deferForRecognition(
 		Files:           make([]recognition.File, 0, len(items)),
 	}
 	fileIndexes := make(map[string]int, len(items))
+	sourceIDs := make([]string, 0, len(items))
 	for i, entry := range items {
 		sourceID := fmt.Sprintf("source_%d_%d", workIndex, i+1)
 		fileIndexes[sourceID] = i
+		sourceIDs = append(sourceIDs, sourceID)
 		work.Files = append(work.Files, recognition.File{
 			SourceID:     sourceID,
 			Name:         entry.item.Name,
@@ -63,6 +66,7 @@ func (p *Planner) deferForRecognition(
 		alignDefaults: alignDefaults,
 		request:       work,
 		fileIndexes:   fileIndexes,
+		sourceIDs:     sourceIDs,
 		matchReason:   matchReason,
 		skipReason:    skipReason,
 		fallbackMatch: fallback,
@@ -89,6 +93,8 @@ func (p *Planner) runRecognitionEnhancement() error {
 	} else {
 		response, err = p.recognition.Enhance(p.ctx, request)
 	}
+	// 模型请求已结束，后续是 TMDB 匹配与计划生成，不再展示 AI 倒计时。
+	p.emitProgress()
 	if err != nil {
 		if !errors.Is(err, recognition.ErrUnavailable) {
 			p.log(fmt.Sprintf("[计划] AI 辅助识别失败，已按原规则降级: %v", err))
@@ -168,6 +174,11 @@ func (p *Planner) emitRecognitionProgress(state recognition.BatchProgress) {
 		AIFailed:     state.Failed,
 		AIChunk:      state.CurrentChunk,
 		AIChunks:     state.TotalChunks,
+		AIBatchSize:  state.CurrentBatchSize,
+		AISplitDepth: state.SplitDepth,
+		AIStartedAt:  state.AttemptStartedAt,
+		AITimeout:    state.AttemptTimeoutSeconds,
+		AIRetrying:   state.RetryingSmallerBatch,
 	})
 }
 
@@ -178,10 +189,20 @@ func (p *Planner) planRecognizedGroup(group *deferredGroup, result recognition.W
 		key.mediaKind = result.MediaType
 	}
 	key.setYear(result.Year)
-	key.setSeason(result.Season)
+	// 只让 AI 补全内置规则未识别的季号。SxxExx、“第x季”等明确结果不得被模型覆盖。
+	if !key.hasSeason {
+		key.setSeason(result.Season)
+	}
 	items := append([]batchEntry(nil), group.items...)
-	fileResults := make(map[string]recognition.FileResult, len(result.Files))
-	for _, file := range result.Files {
+	resolvedFiles, resolveErr := p.resolveUnparsedEpisodes(group, key, items)
+	if p.ctx.Err() != nil {
+		return p.ctx.Err()
+	}
+	if resolveErr != nil {
+		p.log(fmt.Sprintf("[计划] AI 集数补判未完全成功，未命中文件保留原规则结果: %v", resolveErr))
+	}
+	fileResults := make(map[string]recognition.FileResult, len(resolvedFiles))
+	for _, file := range resolvedFiles {
 		fileResults[file.SourceID] = file
 	}
 	for sourceID, index := range group.fileIndexes {
@@ -192,8 +213,8 @@ func (p *Planner) planRecognizedGroup(group *deferredGroup, result recognition.W
 		items[index].fileParsed.Year = key.yearPtr()
 		if key.mediaKind == "tv" {
 			items[index].fileParsed.Type = "episode"
-			if result.Season != nil {
-				items[index].fileParsed.Season = result.Season
+			if items[index].fileParsed.Season == nil && key.hasSeason {
+				items[index].fileParsed.Season = key.seasonPtr()
 			}
 		} else {
 			items[index].fileParsed.Type = "movie"
@@ -212,6 +233,47 @@ func (p *Planner) planRecognizedGroup(group *deferredGroup, result recognition.W
 		}
 	}
 	return p.planGroupWithMatch(key, items, group.alignDefaults, nil, false)
+}
+
+func (p *Planner) resolveUnparsedEpisodes(
+	group *deferredGroup,
+	key groupKey,
+	items []batchEntry,
+) ([]recognition.FileResult, error) {
+	if key.mediaKind != "tv" {
+		return nil, nil
+	}
+	resolver, ok := p.recognition.(recognition.EpisodeResolver)
+	if !ok {
+		return nil, nil
+	}
+	files := make([]recognition.File, 0)
+	for index, sourceID := range group.sourceIDs {
+		if index >= len(items) || items[index].fileParsed.Episode != nil {
+			continue
+		}
+		entry := items[index]
+		files = append(files, recognition.File{
+			SourceID:     sourceID,
+			Name:         entry.item.Name,
+			RelativePath: recognitionFilePath(entry),
+			Size:         entry.item.Size,
+		})
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	p.log(fmt.Sprintf("[计划] AI 补判 %d 个内置规则无法确定集数的文件", len(files)))
+	resolved, err := resolver.ResolveEpisodes(p.ctx, recognition.EpisodeRequest{
+		WorkID:    group.request.WorkID,
+		Title:     key.title,
+		Year:      key.yearPtr(),
+		Season:    key.seasonPtr(),
+		Directory: group.request.Directory,
+		Files:     files,
+	})
+	p.log(fmt.Sprintf("[计划] AI 集数补判完成: %d/%d", len(resolved), len(files)))
+	return resolved, err
 }
 
 func (p *Planner) finishDeferred(group *deferredGroup) error {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import IconOrText from "@/components/icons/IconOrText.vue";
 defineProps<{
   icon?: string;
   title?: string;
@@ -8,7 +9,7 @@ defineProps<{
 
 <template>
   <div class="admin-empty-state">
-    <span v-if="icon" class="admin-empty-state__icon">{{ icon }}</span>
+    <span v-if="icon" class="admin-empty-state__icon"><IconOrText :value="icon" :size="40" /></span>
     <p v-if="title" class="admin-empty-state__title">{{ title }}</p>
     <p v-if="description" class="admin-empty-state__desc">{{ description }}</p>
     <slot />

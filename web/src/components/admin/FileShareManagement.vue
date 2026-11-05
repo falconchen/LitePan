@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent, ref } from "vue";
 import { useRoute } from "vue-router";
 import { ApiError } from "@/api/client";
 import AppButton from "@/components/base/AppButton.vue";
+import BandMenuButton from "@/components/admin/band/BandMenuButton.vue";
 import SectionTabBar from "@/components/admin/SectionTabBar.vue";
 import WebDAVSettings from "@/components/admin/WebDAVSettings.vue";
 // 本地挂载面板较大且非默认 tab，按需加载；type-only import 仅用于 ref 类型，不引入代码。
@@ -27,6 +28,8 @@ const fuseMgmtRef = ref<InstanceType<typeof FuseManagementComponent> | null>(nul
 const savingWebdav = ref(false);
 
 const webdavDirty = computed(() => Boolean(webdavSettingsRef.value?.getDirty?.()));
+// 本地挂载页的 ☰ 挂在页面 tab 栏里（面板隐藏后才出现），状态由面板组件持有。
+const fuseBandHidden = computed(() => Boolean(fuseMgmtRef.value?.bandHidden));
 const fuseDirty = computed(() => Boolean(fuseMgmtRef.value?.getDirty?.()));
 
 function normalizeShareTab(tab: string): string {
@@ -99,9 +102,15 @@ async function saveWebdav() {
         >
           {{ savingWebdav ? "保存中…" : "保存设置" }}
         </AppButton>
-        <AppButton v-else-if="activeTab === FUSE_TAB" type="button" variant="primary" @click="fuseMgmtRef?.openCreate()">
-          添加挂载点
-        </AppButton>
+        <template v-else-if="activeTab === FUSE_TAB">
+          <BandMenuButton
+            v-if="fuseBandHidden"
+            settings-label="打开挂载设置"
+            @show-panel="fuseMgmtRef?.showPanel()"
+            @open-settings="fuseMgmtRef?.openSettings()"
+          />
+          <AppButton type="button" variant="primary" @click="fuseMgmtRef?.openCreate()">添加挂载点</AppButton>
+        </template>
       </template>
     </SectionTabBar>
 

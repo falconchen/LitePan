@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"strings"
+	"time"
 
 	"litepan/internal/domain"
 	"litepan/internal/settings"
@@ -40,18 +41,20 @@ type strmTaskDTO struct {
 	RemovedCount        int64  `json:"removed_count"`
 	LastScan            string `json:"last_scan,omitempty"`
 	LastScanStatus      string `json:"last_scan_status,omitempty"`
-	AutomationManaged   bool   `json:"automation_managed"`
-	IsScanning          bool   `json:"is_scanning"`
-	ScanPhase           string `json:"scan_phase,omitempty"`
-	CurrentLabel        string `json:"current_label,omitempty"`
-	ScannedDirs         int    `json:"scanned_dirs"`
-	ScannedFiles        int    `json:"scanned_files"`
-	MetadataTotal       int    `json:"metadata_total,omitempty"`
-	MetadataDone        int    `json:"metadata_done,omitempty"`
-	StartedAt           string `json:"started_at,omitempty"`
-	CurrentDurationMs   int64  `json:"current_duration_ms"`
-	CreatedAt           string `json:"created_at,omitempty"`
-	UpdatedAt           string `json:"updated_at,omitempty"`
+	// NextRunAt 是后端计算的下一次自动扫描时间；为空表示不参与自动调度（手动或未启用）。
+	NextRunAt         string `json:"next_run_at,omitempty"`
+	AutomationManaged bool   `json:"automation_managed"`
+	IsScanning        bool   `json:"is_scanning"`
+	ScanPhase         string `json:"scan_phase,omitempty"`
+	CurrentLabel      string `json:"current_label,omitempty"`
+	ScannedDirs       int    `json:"scanned_dirs"`
+	ScannedFiles      int    `json:"scanned_files"`
+	MetadataTotal     int    `json:"metadata_total,omitempty"`
+	MetadataDone      int    `json:"metadata_done,omitempty"`
+	StartedAt         string `json:"started_at,omitempty"`
+	CurrentDurationMs int64  `json:"current_duration_ms"`
+	CreatedAt         string `json:"created_at,omitempty"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
 }
 
 type strmBranchDTO struct {
@@ -66,15 +69,19 @@ type strmBranchDTO struct {
 	BranchType    string `json:"branch_type"`
 	Status        string `json:"status,omitempty"`
 	Source        string `json:"source,omitempty"`
+	// RelativeDirs 是相对目录的「目录段数组」，仅入参使用、不入库。
+	// 目录名自带斜杠时必须靠它才能确定段边界。
+	RelativeDirs []string `json:"relative_dirs,omitempty"`
 }
 
 type strmBranchPatchDTO struct {
-	ParentID      *string `json:"parent_id"`
-	Path          *string `json:"path"`
-	Recursive     *bool   `json:"recursive"`
-	RetentionDays *int    `json:"retention_days"`
-	BranchType    *string `json:"branch_type"`
-	Status        *string `json:"status"`
+	ParentID      *string  `json:"parent_id"`
+	Path          *string  `json:"path"`
+	Recursive     *bool    `json:"recursive"`
+	RetentionDays *int     `json:"retention_days"`
+	BranchType    *string  `json:"branch_type"`
+	Status        *string  `json:"status"`
+	RelativeDirs  []string `json:"relative_dirs,omitempty"`
 }
 
 func (h *Handler) listStrmTasks(w http.ResponseWriter, r *http.Request) {
@@ -95,13 +102,14 @@ func (h *Handler) listStrmTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	out := make([]strmTaskDTO, 0, len(tasks))
+	now := time.Now()
 	for _, t := range tasks {
 		meta := h.strm.TaskListMeta(t.ID, t.Status)
 		if meta.StaleRunning {
 			h.strm.FixStaleRunningAsync(t.ID)
 		}
 		_, managed := managedIDs[t.ID]
-		out = append(out, toStrmTaskDTO(t, meta, managed))
+		out = append(out, toStrmTaskDTO(t, meta, managed, nextRunAtString(h, t, now)))
 	}
 	writeOK(w, out)
 }
@@ -132,7 +140,7 @@ func (h *Handler) createStrmTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed))
+	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed, nextRunAtString(h, task, time.Now())))
 }
 
 func (h *Handler) updateStrmTask(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +167,7 @@ func (h *Handler) updateStrmTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed))
+	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed, nextRunAtString(h, task, time.Now())))
 }
 
 func (h *Handler) deleteStrmTask(w http.ResponseWriter, r *http.Request) {
@@ -198,7 +206,7 @@ func (h *Handler) toggleStrmTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed))
+	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed, nextRunAtString(h, task, time.Now())))
 }
 
 func (h *Handler) runStrmTaskNow(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +229,7 @@ func (h *Handler) runStrmTaskNow(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed))
+	writeOK(w, toStrmTaskDTO(task, h.strm.TaskListMeta(task.ID, task.Status), managed, nextRunAtString(h, task, time.Now())))
 }
 
 func (h *Handler) forceStopStrmTask(w http.ResponseWriter, r *http.Request) {
@@ -280,7 +288,7 @@ func (h *Handler) createStrmBranch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, err)
 		return
 	}
-	branch, err := h.strm.CreateBranch(r.Context(), fromStrmBranchDTO(taskID, in))
+	branch, err := h.strm.CreateBranch(r.Context(), fromStrmBranchDTO(taskID, in), in.RelativeDirs)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -314,7 +322,7 @@ func (h *Handler) updateStrmBranch(w http.ResponseWriter, r *http.Request) {
 		RetentionDays: in.RetentionDays,
 		BranchType:    in.BranchType,
 		Status:        in.Status,
-	})
+	}, in.RelativeDirs)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -375,10 +383,13 @@ type strmCurrentDirectoryItemDTO struct {
 }
 
 type strmCurrentDirectoryDTO struct {
-	AccountID int64                         `json:"account_id"`
-	ParentID  string                        `json:"parent_id"`
-	Path      string                        `json:"path"`
-	Items     []strmCurrentDirectoryItemDTO `json:"items"`
+	AccountID int64  `json:"account_id"`
+	ParentID  string `json:"parent_id"`
+	Path      string `json:"path"`
+	// Dirs 是当前目录的「目录段数组」（相对账号根）。显示路径用 "/" 拼起来后
+	// 无法还原段边界（目录名自带斜杠时和多层目录长得一样），所以前端一并传上来。
+	Dirs  []string                      `json:"dirs,omitempty"`
+	Items []strmCurrentDirectoryItemDTO `json:"items"`
 }
 
 type strmCurrentDirectoryResultDTO struct {
@@ -416,7 +427,7 @@ func (h *Handler) checkStrmDirectoryStatus(w http.ResponseWriter, r *http.Reques
 			ID: item.ID, Name: item.Name, Size: item.Size, IsDir: item.IsDir,
 		})
 	}
-	status, err := h.strm.CheckCurrentDirectoryStatus(r.Context(), in.AccountID, in.ParentID, in.Path, items)
+	status, err := h.strm.CheckCurrentDirectoryStatus(r.Context(), in.AccountID, in.ParentID, in.Path, in.Dirs, items)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -443,7 +454,7 @@ func (h *Handler) generateCurrentDirectoryStrm(w http.ResponseWriter, r *http.Re
 			ID: item.ID, Name: item.Name, Size: item.Size, IsDir: item.IsDir,
 		})
 	}
-	result, err := h.strm.GenerateCurrentDirectory(r.Context(), in.AccountID, in.ParentID, in.Path, items)
+	result, err := h.strm.GenerateCurrentDirectory(r.Context(), in.AccountID, in.ParentID, in.Path, in.Dirs, items)
 	if err != nil {
 		writeErr(w, err)
 		return
@@ -603,7 +614,16 @@ func fromStrmTaskDTO(in strmTaskDTO) *domain.StrmTask {
 	}
 }
 
-func toStrmTaskDTO(task *domain.StrmTask, meta strm.TaskListMeta, automationManaged bool) strmTaskDTO {
+// nextRunAtString 取后端计算的下一次自动扫描时间并格式化成 API 时间字符串。
+func nextRunAtString(h *Handler, task *domain.StrmTask, now time.Time) string {
+	next, ok := h.strm.NextRunAt(task, now)
+	if !ok || next.IsZero() {
+		return ""
+	}
+	return FormatAPITime(next)
+}
+
+func toStrmTaskDTO(task *domain.StrmTask, meta strm.TaskListMeta, automationManaged bool, nextRunAt string) strmTaskDTO {
 	out := strmTaskDTO{
 		ID:                  task.ID,
 		Name:                task.Name,
@@ -633,6 +653,7 @@ func toStrmTaskDTO(task *domain.StrmTask, meta strm.TaskListMeta, automationMana
 		UpdatedCount:        task.UpdatedCount,
 		RemovedCount:        task.RemovedCount,
 		LastScanStatus:      task.LastScanStatus,
+		NextRunAt:           nextRunAt,
 		AutomationManaged:   automationManaged,
 		IsScanning:          meta.IsScanning,
 		ScanPhase:           meta.Phase,
@@ -646,18 +667,10 @@ func toStrmTaskDTO(task *domain.StrmTask, meta strm.TaskListMeta, automationMana
 	if meta.StaleRunning {
 		out.Status = domain.StrmStatusActive
 	}
-	if !meta.StartedAt.IsZero() {
-		out.StartedAt = FormatAPITime(meta.StartedAt)
-	}
-	if !task.LastScan.IsZero() {
-		out.LastScan = FormatAPITime(task.LastScan)
-	}
-	if !task.CreatedAt.IsZero() {
-		out.CreatedAt = FormatAPITime(task.CreatedAt)
-	}
-	if !task.UpdatedAt.IsZero() {
-		out.UpdatedAt = FormatAPITime(task.UpdatedAt)
-	}
+	out.StartedAt = FormatAPITime(meta.StartedAt)
+	out.LastScan = FormatAPITime(task.LastScan)
+	out.CreatedAt = FormatAPITime(task.CreatedAt)
+	out.UpdatedAt = FormatAPITime(task.UpdatedAt)
 	return out
 }
 

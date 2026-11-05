@@ -169,7 +169,6 @@ func (m *metadataSyncer) syncFiles(ctx context.Context, accountID int64, root st
 		select {
 		case jobs <- metadataDownloadJob{group: group, resolved: resolved}:
 		case <-ctx.Done():
-			break
 		}
 	}
 	close(jobs)
@@ -178,10 +177,6 @@ func (m *metadataSyncer) syncFiles(ctx context.Context, accountID int64, root st
 		return createdCount(), err
 	}
 	return createdCount(), nil
-}
-
-func filterPendingMetadataItems(root string, items []metadataItem) []metadataItem {
-	return pendingMetadataItems(root, items, nil)
 }
 
 func pendingMetadataItems(root string, items []metadataItem, failures *FailureCollector) []metadataItem {
@@ -201,34 +196,6 @@ func pendingMetadataItems(root string, items []metadataItem, failures *FailureCo
 		out = append(out, item)
 	}
 	return out
-}
-
-func (m *metadataSyncer) syncOne(ctx context.Context, client *http.Client, accountID int64, root string, item metadataItem) (created bool, err error) {
-	dest := filepath.Join(root, item.relPath)
-	if pathHasOversizedComponent(dest) {
-		addOversizedPathFailure(m.failures, ScanFailureMetadata, item.relPath, false)
-		return false, nil
-	}
-	if info, statErr := os.Stat(dest); statErr == nil && info.Size() > 0 {
-		return false, nil
-	}
-	if migrated, migrateErr := migrateLegacyMetadata(root, item); migrateErr != nil {
-		m.recordFailure(item.relPath, migrateErr.Error())
-		return false, nil
-	} else if migrated {
-		return true, nil
-	}
-	body, dlErr := m.downloadWithRetry(ctx, client, accountID, item.fileID, 0)
-	if dlErr != nil {
-		m.recordFailure(item.relPath, dlErr.Error())
-		return false, nil
-	}
-	written, writeErr := writeMetadataFile(root, item.relPath, body)
-	if writeErr != nil {
-		m.recordFailure(item.relPath, writeErr.Error())
-		return false, nil
-	}
-	return written, nil
 }
 
 func migrateLegacyMetadata(root string, item metadataItem) (bool, error) {
@@ -356,18 +323,6 @@ func readMetadataLocalFile(ctx context.Context, localPath string, expectedSize i
 		return nil, fmt.Errorf("文件大小不一致: expected=%d, got=%d", expectedSize, len(body))
 	}
 	return body, nil
-}
-
-func (m *metadataSyncer) downloadWithRetry(ctx context.Context, client *http.Client, accountID int64, fileID string, expectedSize int64) ([]byte, error) {
-	res, err := m.resolve(ctx, accountID, fileID, false)
-	if err != nil {
-		return nil, err
-	}
-	if expectedSize > 0 {
-		res.File.Size = expectedSize
-		res.Link.Size = expectedSize
-	}
-	return m.downloadResolvedWithRetry(ctx, client, accountID, fileID, res)
 }
 
 func (m *metadataSyncer) resolve(ctx context.Context, accountID int64, fileID string, refresh bool) (playback.Resolved, error) {

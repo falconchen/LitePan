@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import AppModal from "@/components/base/AppModal.vue";
 import type { AnnouncementItem } from "@/api/announcement";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
-const props = defineProps<{
+defineProps<{
   open: boolean;
   item: AnnouncementItem | null;
 }>();
@@ -62,7 +63,7 @@ function closeAll() {
           target="_blank"
           rel="noopener noreferrer"
         >
-          <i class="fab fa-github announcement-modal__link-icon" aria-hidden="true" />
+          <SvgIcon name="hand-github" size="1em" class="announcement-modal__link-icon" />
           <span class="announcement-modal__link-copy">
             <strong>GitHub 仓库</strong>
             <small>源码与问题反馈</small>
@@ -74,7 +75,7 @@ function closeAll() {
           target="_blank"
           rel="noopener noreferrer"
         >
-          <i class="fas fa-heart announcement-modal__link-icon announcement-modal__link-icon--sponsor" aria-hidden="true" />
+          <SvgIcon name="heart" size="1em" class="announcement-modal__link-icon announcement-modal__link-icon--sponsor" />
           <span class="announcement-modal__link-copy">
             <strong>打赏支持</strong>
             <small>赞助 LitePan 开发</small>
@@ -86,7 +87,7 @@ function closeAll() {
           target="_blank"
           rel="noopener noreferrer"
         >
-          <i class="fas fa-list-ul announcement-modal__link-icon announcement-modal__link-icon--log" aria-hidden="true" />
+          <SvgIcon name="list-ul" size="1em" class="announcement-modal__link-icon announcement-modal__link-icon--log" />
           <span class="announcement-modal__link-copy">
             <strong>更新日志</strong>
             <small>查看历史版本</small>

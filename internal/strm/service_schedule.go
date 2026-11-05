@@ -3,6 +3,7 @@ package strm
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"litepan/internal/auth"
@@ -17,62 +18,67 @@ func (s *Service) scheduleOnce(ctx context.Context) {
 	}
 	tasks, err := s.repo.List(ctx)
 	if err != nil {
-		s.log.Warn("strm scheduler list failed", "err", err)
+		s.log.Warn("读取 STRM 调度列表失败", "err", err)
 		return
 	}
-	now := time.Now()
+	for _, task := range s.queuedTasks(tasks, time.Now()) {
+		s.runTaskAsync(task)
+	}
+}
+
+type queuedRun struct {
+	accountID int64
+	order     uint64
+}
+
+// 已到期的任务保留排队顺序，完成后再次到期只能排到队尾。
+func (s *Service) enqueueRunLocked(task *domain.StrmTask) {
+	if s.running[task.ID] {
+		return
+	}
+	if s.waitingRuns == nil {
+		s.waitingRuns = make(map[int64]queuedRun)
+	}
+	if _, exists := s.waitingRuns[task.ID]; !exists {
+		s.nextRunOrder++
+		s.waitingRuns[task.ID] = queuedRun{accountID: task.AccountID, order: s.nextRunOrder}
+	}
+}
+
+func (s *Service) queuedTasks(tasks []*domain.StrmTask, now time.Time) []*domain.StrmTask {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	eligible := make(map[int64]*domain.StrmTask)
 	for _, task := range tasks {
-		if task.Status != domain.StrmStatusActive {
+		if task.Status != domain.StrmStatusActive || s.running[task.ID] {
 			continue
 		}
-		pending := s.hasPendingRun(task.ID)
+		_, pending := s.pendingRun[task.ID]
 		if !ShouldAutoSchedule(task) && !pending {
 			continue
 		}
 		if !pending && !IsInTimeWindow(task, now) {
 			continue
 		}
-		if !s.shouldRun(task, now) {
+		_, queued := s.waitingRuns[task.ID]
+		if !pending && !queued && !s.dirtyAccounts[task.AccountID] && !task.LastScan.IsZero() && now.Sub(task.LastScan) < time.Duration(s.effectiveScanIntervalMinutes(task))*time.Minute {
 			continue
 		}
-		s.runTaskAsync(task)
+		s.enqueueRunLocked(task)
+		eligible[task.ID] = task
 	}
-}
-
-func (s *Service) hasPendingRun(id int64) bool {
-	if s == nil {
-		return false
+	clear(s.dirtyAccounts)
+	result := make([]*domain.StrmTask, 0, len(eligible))
+	for id := range s.waitingRuns {
+		if task, ok := eligible[id]; ok {
+			result = append(result, task)
+		} else {
+			delete(s.waitingRuns, id)
+			delete(s.pendingRun, id)
+		}
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.pendingRun[id]
-	return ok
-}
-
-func (s *Service) shouldRun(task *domain.StrmTask, now time.Time) bool {
-	if s.isOrganizeBusy(task.AccountID) {
-		return false
-	}
-	if s.isRetentionBusy(task.AccountID) {
-		return false
-	}
-	if s.IsTaskFileOperationBusy(task.ID) {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.running[task.ID] {
-		return false
-	}
-	if s.dirtyAccounts[task.AccountID] {
-		delete(s.dirtyAccounts, task.AccountID)
-		return true
-	}
-	interval := s.effectiveScanIntervalMinutes(task)
-	if task.LastScan.IsZero() {
-		return true
-	}
-	return now.Sub(task.LastScan) >= time.Duration(interval)*time.Minute
+	sort.Slice(result, func(i, j int) bool { return s.waitingRuns[result[i].ID].order < s.waitingRuns[result[j].ID].order })
+	return result
 }
 
 func (s *Service) runTaskAsync(task *domain.StrmTask) {
@@ -97,6 +103,7 @@ func (s *Service) runTaskAsync(task *domain.StrmTask) {
 		return
 	}
 	s.running[task.ID] = true
+	delete(s.waitingRuns, task.ID)
 	if task.AccountID > 0 {
 		s.runningAccounts[task.AccountID] = struct{}{}
 	}
@@ -202,7 +209,7 @@ func (s *Service) runTaskAsync(task *domain.StrmTask) {
 			)
 		}
 		if err := s.finalizeScanPersist(task.ID, patch); err != nil {
-			s.log.Warn("strm update scan failed", "task_id", task.ID, "err", err)
+			s.log.Warn("更新 STRM 扫描状态失败", "task_id", task.ID, "err", err)
 		}
 		if err == nil || errors.Is(err, context.Canceled) {
 			s.notifyScanFailures(task, result.Failures)
@@ -216,6 +223,13 @@ func (s *Service) runTaskAsync(task *domain.StrmTask) {
 func (s *Service) canStartTaskLocked(task *domain.StrmTask, taskConcurrency int) bool {
 	if task == nil || s.running[task.ID] || len(s.running) >= taskConcurrency {
 		return false
+	}
+	if current, queued := s.waitingRuns[task.ID]; queued {
+		for _, waiting := range s.waitingRuns {
+			if waiting.accountID == task.AccountID && waiting.order < current.order {
+				return false
+			}
+		}
 	}
 	_, accountRunning := s.runningAccounts[task.AccountID]
 	return task.AccountID <= 0 || !accountRunning

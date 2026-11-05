@@ -50,7 +50,6 @@ export function useUploadFileInput(ctx: UploadActionsCtx) {
           file: p.file,
           conflictPolicy: p.conflictPolicy,
         });
-        store.ensureUploadTaskDisplayOrder(p.localTask);
       }
       const localTasks = [...skipped, ...plans.map((p) => p.localTask)];
       if (localTasks.length) {

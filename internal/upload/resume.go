@@ -35,9 +35,7 @@ func (m *Manager) FlushPendingResume() {
 	m.resumePersistMu.Lock()
 	taskIDs := make([]string, 0, len(m.resumePersist))
 	for id, timer := range m.resumePersist {
-		if timer != nil {
-			timer.Stop()
-		}
+		timer.Stop()
 		taskIDs = append(taskIDs, id)
 	}
 	m.resumePersist = make(map[string]*time.Timer)
@@ -57,7 +55,7 @@ func (m *Manager) scheduleResumePersist(taskID string) {
 	if m.resumePersist == nil {
 		m.resumePersist = make(map[string]*time.Timer)
 	}
-	if timer, ok := m.resumePersist[taskID]; ok && timer != nil {
+	if timer, ok := m.resumePersist[taskID]; ok {
 		timer.Reset(resumePersistDebounce)
 		return
 	}
@@ -69,9 +67,7 @@ func (m *Manager) scheduleResumePersist(taskID string) {
 func (m *Manager) flushResumePersist(taskID string) {
 	m.resumePersistMu.Lock()
 	if timer, ok := m.resumePersist[taskID]; ok {
-		if timer != nil {
-			timer.Stop()
-		}
+		timer.Stop()
 		delete(m.resumePersist, taskID)
 	}
 	m.resumePersistMu.Unlock()

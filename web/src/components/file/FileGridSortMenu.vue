@@ -95,7 +95,7 @@ function applySort(key: SortKey, order: SortOrder) {
   align-items: center;
   justify-content: center;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -130,7 +130,7 @@ function applySort(key: SortKey, order: SortOrder) {
 .grid-sort-order-btn {
   flex: 1;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: var(--surface);
   color: var(--text-regular);
   font-size: 12px;

@@ -341,7 +341,7 @@ onMounted(async () => {
       <nav class="header__nav">
         <RouterLink v-if="!loggedIn" to="/login" class="header-auth" title="登录后台">
           <span class="header-auth__icon" aria-hidden="true">
-            <SvgIcon name="sign-in" :size="15" />
+            <SvgIcon name="hand-sign-in" :size="16" />
           </span>
           <span class="header-auth__sep" aria-hidden="true" />
           <span class="header-auth__text">登录后台</span>
@@ -356,7 +356,7 @@ onMounted(async () => {
             :disabled="loggingOut"
             @click="handleLogout"
           >
-            <SvgIcon name="sign-out" :size="15" />
+            <SvgIcon name="hand-sign-out" :size="16" />
           </button>
           <span class="header-auth__sep" aria-hidden="true" />
           <RouterLink to="/admin" class="header-auth__text">管理后台</RouterLink>
@@ -469,7 +469,7 @@ onMounted(async () => {
   right: 152px;
   width: var(--beam-width);
   height: 14px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.18) 18%, rgba(255, 255, 246, 0.62) 48%, rgba(255, 237, 186, 0.32) 78%, rgba(255, 255, 255, 0) 100%);
   filter: blur(9px);
   opacity: 0.42;
@@ -523,7 +523,7 @@ onMounted(async () => {
   right: 62px;
   width: 520px;
   height: 80px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: radial-gradient(ellipse at 78% 50%, rgba(255, 247, 213, 0.22), rgba(255, 244, 205, 0.1) 34%, rgba(255, 255, 255, 0) 72%);
   filter: blur(22px);
   opacity: 0.3;
@@ -558,7 +558,7 @@ onMounted(async () => {
 .cloud-band {
   position: absolute;
   height: 44px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background:
     linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.16) 18%, rgba(255, 255, 255, 0.24) 46%, rgba(255, 255, 255, 0.1) 72%, rgba(255, 255, 255, 0) 100%);
   filter: blur(14px);
@@ -606,7 +606,7 @@ onMounted(async () => {
   position: absolute;
   width: 140px;
   height: 22px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: linear-gradient(90deg, rgba(255, 255, 255, 0), rgba(255, 255, 255, 0.12) 40%, rgba(255, 255, 255, 0) 100%);
   filter: blur(8px);
   mix-blend-mode: screen;
@@ -646,7 +646,7 @@ onMounted(async () => {
   right: 0;
   width: var(--ray-width, 220px);
   height: 132%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: linear-gradient(180deg, rgba(255, 251, 230, 0.36) 0%, rgba(255, 248, 219, 0.16) 24%, rgba(255, 247, 223, 0.08) 48%, rgba(255, 255, 255, 0) 100%);
   filter: blur(18px);
   mix-blend-mode: screen;

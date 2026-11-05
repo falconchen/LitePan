@@ -86,7 +86,7 @@ function handleClose() {
       </div>
 
       <div v-else-if="loading" class="name-align__state">
-        <BusySpinner variant="notch" :size="28" color="var(--brand)" />
+        <BusySpinner variant="notch" :size="26" color="var(--brand)" />
         <span>正在分析当前目录...</span>
       </div>
 
@@ -334,7 +334,7 @@ function handleClose() {
   justify-content: center;
   width: 22px;
   height: 22px;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: var(--surface-sunken);
   color: var(--text-muted);
   font-size: 12px;
@@ -407,7 +407,7 @@ function handleClose() {
 .name-align__remove,
 .name-align__btn {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   color: var(--text);
   font-size: 13px;
@@ -489,7 +489,7 @@ function handleClose() {
   height: 7px;
   margin-top: 8px;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-sunken);
 }
 

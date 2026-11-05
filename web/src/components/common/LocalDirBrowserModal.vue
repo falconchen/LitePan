@@ -112,7 +112,7 @@ watch(
             aria-label="关闭"
             @click="emit('close')"
           >
-            ×
+            <SvgIcon name="xmark" :size="14" />
           </button>
         </div>
 
@@ -153,7 +153,7 @@ watch(
                   @dblclick="emit('select', dir.path)"
                 >
                   <div class="folder-name-cell">
-                    <span class="folder-name-icon"><SvgIcon name="folder" :size="18" /></span>
+                    <span class="folder-name-icon"><SvgIcon name="badge-folder" :size="18" /></span>
                     <span class="folder-name-text" :title="dir.name">{{ dir.name }}</span>
                   </div>
                 </div>

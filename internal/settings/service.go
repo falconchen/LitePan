@@ -11,7 +11,7 @@ import (
 	"litepan/internal/domain"
 )
 
-// 内存持有 DB 覆盖值快照（启动加载、写入时增量更新），读取走内存 + 代码默认兜底，避免每次列目录都查库。
+// Service 在内存持有 DB 覆盖值快照，读取走内存加代码默认值，避免每次列目录都查库。
 type Service struct {
 	specs []Spec
 	byKey map[string]*Spec
@@ -141,12 +141,22 @@ type Payload struct {
 	Items      []Item     `json:"items"`
 }
 
-// Snapshot 返回当前全部设置（含元数据与当前值），按声明顺序。
+// Snapshot 返回当前全部设置（含元数据与当前值），按声明顺序；不含 Hidden 键。
 func (s *Service) Snapshot() Payload {
+	return s.snapshot(false)
+}
+
+// SnapshotAll 同 Snapshot，但额外带上 Hidden 键（敏感值仍打码）。
+// 供界面偏好这类"后台不展示、前端需要读回"的设置使用。
+func (s *Service) SnapshotAll() Payload {
+	return s.snapshot(true)
+}
+
+func (s *Service) snapshot(includeHidden bool) Payload {
 	items := make([]Item, 0, len(s.specs))
 	for i := range s.specs {
 		sp := &s.specs[i]
-		if sp.Hidden {
+		if sp.Hidden && !includeHidden {
 			continue
 		}
 		stored, ok := s.raw(sp.Key)
@@ -212,6 +222,19 @@ func (s *Service) update(ctx context.Context, in map[string]string, writeLog boo
 		s.vals[k] = v
 	}
 	s.mu.Unlock()
+	// 全部为 SilentLog 键（例如信息条开合这类界面偏好）时不写日志，避免噪音。
+	if writeLog && len(normalized) > 0 {
+		allSilent := true
+		for k := range normalized {
+			if sp := s.byKey[k]; sp == nil || !sp.SilentLog {
+				allSilent = false
+				break
+			}
+		}
+		if allSilent {
+			writeLog = false
+		}
+	}
 	if writeLog && s.log != nil && len(normalized) > 0 {
 		keys := make([]string, 0, len(normalized))
 		for k := range normalized {

@@ -1,9 +1,11 @@
 <script setup lang="ts">
+import IconOrText from "@/components/icons/IconOrText.vue";
 import { computed, nextTick, ref } from "vue";
 import AppButton from "@/components/base/AppButton.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
+import SettingsSegment from "@/components/admin/SettingsSegment.vue";
 
 export interface ProxyFieldOption {
   value: string;
@@ -18,7 +20,7 @@ export interface ProxyField {
   helpTitle?: string;
   helpBody?: string;
   placeholder?: string;
-  type?: "text" | "password" | "select" | "switch" | "segmented-text";
+  type?: "text" | "password" | "select" | "switch" | "segment" | "segmented-text";
   inputmode?: "text" | "numeric";
   options?: ProxyFieldOption[];
   segmentKey?: string;
@@ -39,7 +41,7 @@ export interface ProxyWorkspaceItem {
   lastError?: string;
 }
 
-const props = withDefaults(
+withDefaults(
   defineProps<{
     open: boolean;
     title: string;
@@ -74,7 +76,7 @@ const props = withDefaults(
     addable?: boolean;
   }>(),
   {
-    namePlaceholder: "例如：家庭 Emby",
+    namePlaceholder: "例如：家庭媒体服务",
     nameEditable: true,
     showEntry: true,
     entryUrl: "",
@@ -147,7 +149,7 @@ function cancelName() {
     <div class="ws">
       <!-- 左侧配置列表 -->
         <aside class="ws-side">
-          <div class="ws-side__cap">{{ caption }}</div>
+          <div v-if="caption" class="ws-side__cap">{{ caption }}</div>
           <div class="ws-side__list">
             <div
               v-for="item in items"
@@ -156,7 +158,7 @@ function cancelName() {
               :class="{ active: item.id === selectedId }"
               @click="emit('select', item.id)"
             >
-              <span class="ws-side__ic">{{ icon }}</span>
+              <span class="ws-side__ic"><IconOrText :value="icon" :size="14" /></span>
               <span class="ws-side__tx">
                 <b>{{ item.id === selectedId ? currentName : item.name }}</b>
                 <small>{{ itemSubtitle(item) }}</small>
@@ -212,6 +214,13 @@ function cancelName() {
             <AppSelect
               v-if="field.type === 'select'"
               v-model="form[field.key]"
+              :options="field.options || []"
+            />
+
+            <SettingsSegment
+              v-else-if="field.type === 'segment'"
+              v-model="form[field.key]"
+              :label="field.label"
               :options="field.options || []"
             />
 
@@ -278,9 +287,12 @@ function cancelName() {
             </div>
           </div>
 
+          <slot name="main-extra" />
+
           <div class="ws-foot">
             <AppButton v-if="showTest" variant="secondary" :disabled="testing" @click="emit('test')">{{ testing ? "测试中…" : "测试连接" }}</AppButton>
             <AppButton v-if="showRefresh" variant="secondary" :disabled="refreshing" @click="emit('refresh')">{{ refreshing ? "刷库中…" : "手动刷库" }}</AppButton>
+            <slot name="footer-actions" />
             <div class="ws-foot__spacer" />
             <AppButton variant="primary" :disabled="saving || saveDisabled" @click="emit('save')">{{ saving ? "保存中…" : saveLabel }}</AppButton>
           </div>
@@ -322,7 +334,7 @@ function cancelName() {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   cursor: pointer;
   transition: 0.12s;
   border: 1px solid transparent;
@@ -337,7 +349,7 @@ function cancelName() {
 .ws-side__ic {
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface3, var(--surface));
   display: flex;
   align-items: center;
@@ -377,6 +389,7 @@ function cancelName() {
 .ws-side__st.on {
   background: var(--success);
 }
+
 .ws-side__empty {
   padding: 26px 10px;
   text-align: center;
@@ -388,7 +401,7 @@ function cancelName() {
   margin-top: auto;
   width: 100%;
   padding: 8px 12px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   border: 1px dashed var(--border2);
   background: transparent;
   color: var(--text-muted);
@@ -436,7 +449,7 @@ function cancelName() {
   width: min(280px, 100%);
   padding: 4px 8px;
   border: 1px solid var(--brand);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   outline: none;
   box-shadow: 0 0 0 3px var(--brand-soft);
@@ -447,7 +460,7 @@ function cancelName() {
   width: 24px;
   height: 24px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -473,7 +486,7 @@ function cancelName() {
 }
 .ws-del {
   padding: 6px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   background: transparent;
   color: var(--danger);
@@ -509,7 +522,7 @@ function cancelName() {
   width: 100%;
   padding: 9px 12px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: var(--surface-sunken);
   color: var(--text);
   font-size: 13px;
@@ -528,7 +541,7 @@ function cancelName() {
 
 .ws-entry {
   padding: 11px 12px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: radial-gradient(120% 80% at 0% 0%, var(--brand-soft), transparent 55%), var(--surface-sunken);
   border: 1px solid var(--border-soft, var(--border));
 }
@@ -569,7 +582,7 @@ function cancelName() {
   font: inherit;
   font-size: 12px;
   padding: 5px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -589,7 +602,7 @@ function cancelName() {
   gap: 12px;
   padding: 11px 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface-sunken);
 }
 .ws-switch__txt {
@@ -615,7 +628,7 @@ function cancelName() {
   height: 18px;
   margin-left: 6px;
   padding: 0 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: color-mix(in srgb, var(--warning) 14%, var(--surface));
   color: #b45309;
   font-size: 11px;
@@ -645,7 +658,7 @@ function cancelName() {
 .ws-switch__track {
   position: absolute;
   inset: 0;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--border2);
   transition: background 0.15s;
 }
@@ -673,7 +686,7 @@ function cancelName() {
   height: 42px;
   overflow: hidden;
   border: 1px solid var(--brand);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface);
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
@@ -694,7 +707,7 @@ function cancelName() {
   height: 34px;
   padding: 0 12px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-muted);
   font: inherit;
