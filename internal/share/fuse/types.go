@@ -30,6 +30,8 @@ type UploadManager interface {
 	RenameTask(ctx context.Context, taskID, newName, newTargetPath, newDisplayPath string) (bool, error)
 	// Delete 删除上传任务，并可选删除已上传到网盘的文件。
 	Delete(ctx context.Context, taskID string, deleteUploadedFile bool) (bool, error)
+	// Wait 等待任务当前这一轮执行结束并返回最终快照。
+	Wait(ctx context.Context, taskID string) (*upload.Task, error)
 	TempDir() string
 	TempRegistry() *upload.TempRegistry
 }
