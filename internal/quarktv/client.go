@@ -594,23 +594,6 @@ func firstString(m map[string]json.RawMessage, keys ...string) string {
 	return ""
 }
 
-// streaming 解析夸克 TV 的转码播放直链（video-play 域），供播放器直接 302 使用。
-// 与源文件 download 不同，streaming 输出浏览器可播的 mp4/fmp4，range/seek 更稳。
-func (c *Client) streaming(ctx context.Context, fid string) (*domain.DownloadInfo, error) {
-	return c.streamingWithPreference(ctx, fid, StreamingPreference{
-		PreferredResolution: domain.QuarkTVResolutionAuto,
-		AllowDolby:          false,
-	})
-}
-
-func (c *Client) streamingWithPreference(ctx context.Context, fid string, pref StreamingPreference) (*domain.DownloadInfo, error) {
-	result, err := c.streamingResultWithPreference(ctx, fid, pref)
-	if err != nil {
-		return nil, err
-	}
-	return result.Info, nil
-}
-
 // streamingResult 保留选中档位的元数据，仅供夸克 TV 内部的播放策略判断使用。
 // 不把 Format 塞进全驱动共用的 domain.DownloadInfo，避免单驱动细节污染公共层。
 type streamingResult struct {

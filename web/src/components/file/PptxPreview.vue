@@ -8,6 +8,7 @@ import { formatSize } from "@/utils/format";
 import PreviewHeader from "./PreviewHeader.vue";
 import PreviewSideNavigation from "./PreviewSideNavigation.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
 
 const MAX_FILE_BYTES = 200 * 1024 * 1024;
 const MIN_ZOOM = 50;
@@ -178,12 +179,9 @@ onUnmounted(() => {
           <strong>正在解析 PPTX…</strong>
         </div>
 
-        <div v-else-if="error" class="pptx-preview__state pptx-preview__error" role="alert">
-          <i class="fa-solid fa-file-powerpoint" aria-hidden="true" />
-          <strong>无法预览这个演示文稿</strong>
-          <span>{{ error }}</span>
-          <button type="button" @click="emit('download', file)">下载文件</button>
-        </div>
+        <PreviewState v-else-if="error" class="pptx-preview__state pptx-preview__error" icon="file-powerpoint" tone="error" title="无法预览这个演示文稿" :message="error">
+          <template #actions><button type="button" @click="emit('download', file)">下载文件</button></template>
+        </PreviewState>
       </section>
 
       <PreviewSideNavigation
@@ -266,20 +264,10 @@ onUnmounted(() => {
 .pptx-preview__state {
   position: fixed;
   top: 48%;
-  left: 50%;
   z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 10px;
   background: rgb(5 14 28 / 90%);
-  box-shadow: 0 18px 55px rgb(0 0 0 / 34%);
-  transform: translate(-50%, -50%);
 }
 
-.pptx-preview__state strong { font-size: 13px; font-weight: 550; }
 
 
 .pptx-preview__error {
@@ -289,13 +277,12 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.pptx-preview__error > i { color: #ff9a63; font-size: 32px; }
 .pptx-preview__error span { color: #9eb0c8; font-size: 13px; line-height: 1.7; }
 .pptx-preview__error button {
   margin-top: 4px;
   padding: 9px 18px;
   border: 1px solid rgb(104 169 255 / 36%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgb(25 116 230 / 20%);
 }
 
@@ -309,7 +296,7 @@ onUnmounted(() => {
   gap: 3px;
   padding: 7px;
   border: 1px solid rgb(145 174 216 / 20%);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: rgb(5 14 28 / 88%);
   box-shadow: 0 16px 46px rgb(0 0 0 / 42%);
   backdrop-filter: blur(16px);
@@ -323,7 +310,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   font-size: 12px;
 }

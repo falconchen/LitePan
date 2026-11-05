@@ -2,8 +2,10 @@ package adminauth
 
 import (
 	"context"
+	"encoding/base32"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,22 @@ import (
 	"litepan/internal/store"
 	"litepan/pkg/security"
 )
+
+type countingConfigRepo struct {
+	domain.ConfigRepository
+	gets atomic.Int64
+	alls atomic.Int64
+}
+
+func (r *countingConfigRepo) Get(ctx context.Context, key string) (string, bool, error) {
+	r.gets.Add(1)
+	return r.ConfigRepository.Get(ctx, key)
+}
+
+func (r *countingConfigRepo) All(ctx context.Context) (map[string]string, error) {
+	r.alls.Add(1)
+	return r.ConfigRepository.All(ctx)
+}
 
 func newTestAuth(t *testing.T) (*Service, domain.ConfigRepository, context.Context) {
 	t.Helper()
@@ -44,6 +62,51 @@ func newBareTestAuth(t *testing.T) (*Service, domain.ConfigRepository, context.C
 	return New(st.Configs, []byte("test-secret-key-min-16b"), nil), st.Configs, ctx
 }
 
+func TestAdminRequestsReuseConfigSnapshot(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, store.Options{Memory: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	base := store.New(db).Configs
+	if err := base.Set(ctx, KeyAdminUsername, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Set(ctx, KeyAdminPassword, security.HashPassword("changed-secret")); err != nil {
+		t.Fatal(err)
+	}
+	repo := &countingConfigRepo{ConfigRepository: base}
+	svc := New(repo, []byte("test-secret-key-min-16b"), nil)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/accounts", nil)
+	if err := svc.WriteSession(rec, req, Session{IsAdmin: true, Username: "admin"}, true); err != nil {
+		t.Fatal(err)
+	}
+	cookie := rec.Result().Cookies()[0]
+	for range 20 {
+		checkReq := httptest.NewRequest(http.MethodGet, "/api/admin/accounts", nil)
+		checkReq.AddCookie(cookie)
+		sess, ok := svc.ReadSession(checkReq)
+		if !ok {
+			t.Fatal("session should remain valid")
+		}
+		if err := svc.EnsureAdminAccess(ctx, checkReq, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := repo.alls.Load(); got != 1 {
+		t.Fatalf("config snapshot loads = %d, want 1", got)
+	}
+	if got := repo.gets.Load(); got != 0 {
+		t.Fatalf("per-key config reads = %d, want 0", got)
+	}
+}
+
 func TestDefaultAdminPasswordIsInitializedAsHashAndMustChange(t *testing.T) {
 	svc, configs, ctx := newBareTestAuth(t)
 
@@ -75,16 +138,128 @@ func TestDefaultAdminPasswordIsInitializedAsHashAndMustChange(t *testing.T) {
 }
 
 func TestPublicIndexIsDisabledByDefault(t *testing.T) {
-	svc, configs, ctx := newBareTestAuth(t)
+	svc, _, ctx := newBareTestAuth(t)
 	if svc.publicIndexEnabled(ctx) {
 		t.Fatal("public index should be disabled by default")
 	}
-	if err := configs.Set(ctx, KeyPublicIndexEnabled, "true"); err != nil {
+	if err := svc.setConfig(ctx, KeyPublicIndexEnabled, "true"); err != nil {
 		t.Fatalf("enable public index: %v", err)
 	}
 	if !svc.publicIndexEnabled(ctx) {
 		t.Fatal("saved public index setting should override the default")
 	}
+}
+
+func TestTwoFactorLoginDoesNotCreateSessionBeforeCodeVerification(t *testing.T) {
+	svc, _, ctx := newTestAuth(t)
+	setup, err := svc.BeginTwoFactorSetup(ctx, TwoFactorSetupRequest{Password: "changed-secret"})
+	if err != nil {
+		t.Fatalf("begin setup: %v", err)
+	}
+	code := totpCodeForTest(t, setup.Secret, time.Now())
+	recovery, err := svc.ConfirmTwoFactorSetup(ctx, TwoFactorConfirmRequest{SetupToken: setup.SetupToken, Code: code})
+	if err != nil {
+		t.Fatalf("confirm setup: %v", err)
+	}
+	if len(recovery.RecoveryCodes) != 10 {
+		t.Fatalf("recovery codes = %d, want 10", len(recovery.RecoveryCodes))
+	}
+
+	firstRec := httptest.NewRecorder()
+	firstReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	first, err := svc.Login(ctx, firstReq, firstRec, "admin", "changed-secret", true, "", "")
+	if err != nil {
+		t.Fatalf("first factor login: %v", err)
+	}
+	if !first.TwoFactorRequired || first.Challenge == "" {
+		t.Fatalf("expected two-factor challenge, got %+v", first)
+	}
+	if len(firstRec.Result().Cookies()) != 0 {
+		t.Fatal("password-only step must not create an admin session")
+	}
+
+	secondRec := httptest.NewRecorder()
+	secondReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", nil)
+	second, err := svc.Login(ctx, secondReq, secondRec, "", "", false, totpCodeForTest(t, setup.Secret, time.Now()), first.Challenge)
+	if err != nil {
+		t.Fatalf("second factor login: %v", err)
+	}
+	if !second.IsAdmin || len(secondRec.Result().Cookies()) != 1 {
+		t.Fatalf("verified login did not create session: result=%+v cookies=%d", second, len(secondRec.Result().Cookies()))
+	}
+}
+
+func TestTwoFactorRecoveryCodeCanOnlyBeUsedOnce(t *testing.T) {
+	svc, _, ctx := newTestAuth(t)
+	setup, err := svc.BeginTwoFactorSetup(ctx, TwoFactorSetupRequest{Password: "changed-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery, err := svc.ConfirmTwoFactorSetup(ctx, TwoFactorConfirmRequest{
+		SetupToken: setup.SetupToken,
+		Code:       totpCodeForTest(t, setup.Secret, time.Now()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := recovery.RecoveryCodes[0]
+	if err := svc.verifyTwoFactorCode(ctx, code); err != nil {
+		t.Fatalf("first recovery code use: %v", err)
+	}
+	err = svc.verifyTwoFactorCode(ctx, code)
+	if err == nil {
+		t.Fatal("consumed recovery code was accepted again")
+	}
+	// 用错码必须是 VALIDATION(400)：401 + ADMIN_AUTH_REQUIRED 会让前端当成登录态失效直接跳登录页
+	if ae, ok := domain.AsAppError(err); !ok || ae.Code != domain.CodeValidation {
+		t.Fatalf("reused recovery code error = %v, want %v", err, domain.CodeValidation)
+	}
+}
+
+func TestTwoFactorWrongPasswordIsValidationError(t *testing.T) {
+	svc, _, ctx := newTestAuth(t)
+	if _, err := svc.BeginTwoFactorSetup(ctx, TwoFactorSetupRequest{Password: "changed-secret"}); err != nil {
+		t.Fatal(err)
+	}
+	err := svc.DisableTwoFactor(ctx, TwoFactorVerifyRequest{Password: "wrong-password", Code: "123456"})
+	if err == nil {
+		t.Fatal("wrong password was accepted")
+	}
+	if ae, ok := domain.AsAppError(err); !ok || ae.Code != domain.CodeValidation {
+		t.Fatalf("wrong password error = %v, want %v", err, domain.CodeValidation)
+	}
+}
+
+func TestTOTPMatchesRFC6238SHA1Vector(t *testing.T) {
+	secret := []byte("12345678901234567890")
+	if got := totpCode(secret, 59/30); got != "287082" {
+		t.Fatalf("TOTP code = %q, want 287082", got)
+	}
+}
+
+func TestTwoFactorAttemptLimit(t *testing.T) {
+	svc, _, _ := newTestAuth(t)
+	for i := 0; i < 8; i++ {
+		if !svc.allowTwoFactorAttempt("admin|127.0.0.1") {
+			t.Fatalf("attempt %d was blocked too early", i+1)
+		}
+	}
+	if svc.allowTwoFactorAttempt("admin|127.0.0.1") {
+		t.Fatal("ninth attempt should be rate limited")
+	}
+	svc.clearTwoFactorAttempts("admin|127.0.0.1")
+	if !svc.allowTwoFactorAttempt("admin|127.0.0.1") {
+		t.Fatal("successful verification should clear the attempt window")
+	}
+}
+
+func totpCodeForTest(t *testing.T, secret string, now time.Time) string {
+	t.Helper()
+	decoded, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return totpCode(decoded, now.Unix()/30)
 }
 
 func TestReadSessionExpiresAfterTimeout(t *testing.T) {

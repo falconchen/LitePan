@@ -93,6 +93,34 @@ func TestDefaultConfigMatchesFourTemplates(t *testing.T) {
 	}
 }
 
+func TestRootDirectoriesFollowSelectedTemplateAndMediaType(t *testing.T) {
+	svc := newService(t, true)
+	if got := strings.Join(svc.RootDirectories("tv"), ","); got != "电视剧" {
+		t.Fatalf("电视剧任务一级目录 = %q, want %q", got, "电视剧")
+	}
+	if got := strings.Join(svc.RootDirectories("movie"), ","); got != "电影" {
+		t.Fatalf("电影任务一级目录 = %q, want %q", got, "电影")
+	}
+	if got := strings.Join(svc.RootDirectories("auto"), ","); got != "电影,电视剧" {
+		t.Fatalf("自动识别任务一级目录 = %q", got)
+	}
+
+	cfg := svc.Config()
+	cfg.SelectedTemplate = TemplateCustom
+	if _, err := svc.Update(context.Background(), cfg); err != nil {
+		t.Fatalf("切换自定义模板失败: %v", err)
+	}
+	if got := strings.Join(svc.RootDirectories("tv"), ","); got != "综艺,电视剧" {
+		t.Fatalf("自定义模板电视剧候选目录 = %q", got)
+	}
+}
+
+func TestRootDirectoriesDisabled(t *testing.T) {
+	if got := newService(t, false).RootDirectories("tv"); len(got) != 0 {
+		t.Fatalf("未启用分类时不应返回候选目录: %#v", got)
+	}
+}
+
 func TestCustomTemplateSupportsCompoundConditionsAndMixedDepth(t *testing.T) {
 	svc := newService(t, true)
 	cfg := svc.Config()
@@ -465,5 +493,25 @@ func TestUpdateRejectsUnsafeDirectoryNameAndCondition(t *testing.T) {
 	cfg.Templates[2].Rules[0].Children[1].Condition = "genres=动作;动画"
 	if _, err := svc.Update(context.Background(), cfg); err == nil {
 		t.Fatal("应拒绝同级重复匹配值")
+	}
+}
+
+// 证据记录的是命中规则的字段，不是循环最后一条被求值规则的残留。
+func TestFirstMatchingRuleEvidenceUsesWinningField(t *testing.T) {
+	svc := newService(t, true)
+	state := &evaluationState{
+		req:       classification.Request{MediaType: "movie", Raw: map[string]any{}},
+		evaluated: map[string][]string{},
+	}
+	rules := []Rule{
+		{Name: "电影", Condition: "type=movie"},
+		{Name: "中文片", Condition: "original_language=zh"}, // 不命中，且字段不同
+	}
+	rule, matched, err := svc.firstMatchingRule(context.Background(), state, rules)
+	if err != nil || !matched || rule.Name != "电影" {
+		t.Fatalf("命中规则异常: rule=%+v matched=%v err=%v", rule, matched, err)
+	}
+	if state.evaluatedField != "type" || len(state.evaluatedValues) != 1 || state.evaluatedValues[0] != "movie" {
+		t.Fatalf("证据应记录命中规则(type)的字段值，得到 field=%q values=%v", state.evaluatedField, state.evaluatedValues)
 	}
 }

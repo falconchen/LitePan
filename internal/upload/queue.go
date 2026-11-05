@@ -33,7 +33,7 @@ func (m *Manager) RefreshConcurrencyLimit(ctx context.Context) int {
 }
 
 func (m *Manager) taskSlotKindLocked(st *taskState) queueSlotKind {
-	if st != nil && st.SourceType == SourceTypeCrossTransfer && st.Phase == PhaseDownloading {
+	if isCrossTransferDownload(st) {
 		return queueSlotDownload
 	}
 	return queueSlotUpload
@@ -80,12 +80,12 @@ func pendingMessage(st *taskState) string {
 		return "等待上传"
 	}
 	if st.resumePriority {
-		if st.SourceType == SourceTypeCrossTransfer && st.Phase == PhaseDownloading {
+		if isCrossTransferDownload(st) {
 			return "准备继续源盘下载"
 		}
 		return "准备继续上传"
 	}
-	if st.SourceType == SourceTypeCrossTransfer && st.Phase == PhaseDownloading {
+	if isCrossTransferDownload(st) {
 		return "等待源盘下载"
 	}
 	if len(st.resumeData) > 0 {

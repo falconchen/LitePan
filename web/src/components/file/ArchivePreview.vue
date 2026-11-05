@@ -3,10 +3,12 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import type { Entry, ZipReader as ZipReaderType } from "@zip.js/zip.js";
 import { filesApi } from "@/api/files";
 import type { FileItem } from "@/api/types";
-import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
 import { formatSize } from "@/utils/format";
 import PreviewHeader from "./PreviewHeader.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
+import { useModalDismiss } from "@/composables/useModalDismiss";
 
 const props = defineProps<{
   accountId: number;
@@ -226,19 +228,13 @@ async function loadArchive() {
   }
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") emit("close");
-}
-
-useBodyScrollLock();
+useModalDismiss(() => true, () => emit("close"));
 
 onMounted(() => {
-  window.addEventListener("keydown", handleKeydown);
   void loadArchive();
 });
 
 onUnmounted(() => {
-  window.removeEventListener("keydown", handleKeydown);
   void zipReader?.close().catch(() => undefined);
   zipReader = null;
 });
@@ -258,11 +254,11 @@ onUnmounted(() => {
       <section v-if="!loading && !error" class="archive-preview__toolbar">
         <nav class="archive-preview__breadcrumb" aria-label="压缩包内路径">
           <button type="button" :class="{ active: currentPath.length === 0 }" @click="openPath(-1)">
-            <i class="fa-solid fa-box-archive" aria-hidden="true" />
+            <SvgIcon name="box-archive" size="1em" />
             <span>压缩包</span>
           </button>
           <template v-for="(part, index) in currentPath" :key="`${part}:${index}`">
-            <i class="fa-solid fa-chevron-right" aria-hidden="true" />
+            <SvgIcon name="chevron-right" size="1em" />
             <button type="button" :class="{ active: index === currentPath.length - 1 }" @click="openPath(index)">
               {{ part }}
             </button>
@@ -270,10 +266,10 @@ onUnmounted(() => {
         </nav>
 
         <label class="archive-preview__search">
-          <i class="fa-solid fa-magnifying-glass" aria-hidden="true" />
+          <SvgIcon name="magnifying-glass" size="1em" />
           <input v-model="query" type="search" placeholder="搜索压缩包内文件" />
           <button v-if="query" type="button" aria-label="清空搜索" @click="query = ''">
-            <i class="fa-solid fa-xmark" aria-hidden="true" />
+            <SvgIcon name="xmark" size="1em" />
           </button>
         </label>
       </section>
@@ -285,17 +281,11 @@ onUnmounted(() => {
           <span>只读取目录信息，不会在服务器解压</span>
         </div>
 
-        <div v-else-if="error" class="archive-preview__state archive-preview__error" role="alert">
-          <i class="fa-solid fa-file-zipper" aria-hidden="true" />
-          <strong>无法预览这个压缩包</strong>
-          <span>{{ error }}</span>
-          <button type="button" @click="emit('download', file)">下载文件</button>
-        </div>
+        <PreviewState v-else-if="error" class="archive-preview__state archive-preview__error" icon="file-zipper" tone="error" title="无法预览这个压缩包" :message="error">
+          <template #actions><button type="button" @click="emit('download', file)">下载文件</button></template>
+        </PreviewState>
 
-        <div v-else-if="!visibleItems.length" class="archive-preview__state">
-          <i class="fa-regular fa-folder-open" aria-hidden="true" />
-          <strong>{{ query ? '没有找到匹配文件' : '这个文件夹是空的' }}</strong>
-        </div>
+        <PreviewState v-else-if="!visibleItems.length" class="archive-preview__state" icon="folder-open-regular" tone="info" :title="query ? '没有找到匹配文件' : '这个文件夹是空的'" />
 
         <div v-else class="archive-preview__table-wrap">
           <table class="archive-preview__table">
@@ -318,9 +308,9 @@ onUnmounted(() => {
               >
                 <td>
                   <button type="button" :disabled="!item.isDir" :title="item.path" @click="openItem(item)">
-                    <i :class="item.isDir ? 'fa-solid fa-folder' : 'fa-regular fa-file'" aria-hidden="true" />
+                    <SvgIcon :name="item.isDir ? 'folder' : 'file-regular'" size="1em" />
                     <span>{{ query ? item.path : item.name }}</span>
-                    <i v-if="item.isDir" class="fa-solid fa-chevron-right archive-preview__enter" aria-hidden="true" />
+                    <SvgIcon name="chevron-right" size="1em" class="archive-preview__enter" v-if="item.isDir" />
                   </button>
                 </td>
                 <td>{{ item.isDir ? '—' : formatSize(item.size) }}</td>
@@ -328,7 +318,7 @@ onUnmounted(() => {
                 <td>{{ compressionRatio(item) }}</td>
                 <td>{{ formatDate(item.modifiedAt) }}</td>
                 <td>
-                  <i v-if="item.encrypted" class="fa-solid fa-lock" title="已加密" aria-label="已加密" />
+                  <SvgIcon name="lock" size="1em" v-if="item.encrypted" title="已加密" aria-label="已加密" />
                 </td>
               </tr>
             </tbody>
@@ -365,7 +355,7 @@ onUnmounted(() => {
 
 .archive-preview__breadcrumb::-webkit-scrollbar { display: none; }
 
-.archive-preview__breadcrumb > i {
+.archive-preview__breadcrumb > i, .archive-preview__breadcrumb > .lp-svg-icon {
   flex: 0 0 auto;
   color: #465a73;
   font-size: 9px;
@@ -382,7 +372,7 @@ onUnmounted(() => {
   padding: 0 10px;
   color: #8192aa;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -401,7 +391,7 @@ onUnmounted(() => {
   padding: 0 11px;
   color: #70839e;
   border: 1px solid rgb(137 167 208 / 16%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgb(255 255 255 / 4%);
 }
 
@@ -497,7 +487,7 @@ onUnmounted(() => {
 }
 
 .archive-preview__table td > button:disabled { cursor: default; opacity: 1; }
-.archive-preview__table td > button > i:first-child { width: 20px; color: #6f829c; text-align: center; font-size: 16px; }
+.archive-preview__table td > button > i:first-child, .archive-preview__table td > button > .lp-svg-icon:first-child { width: 20px; color: #6f829c; text-align: center; font-size: 16px; }
 .archive-preview__table tr.is-directory td > button > i:first-child { color: #3f9bff; }
 .archive-preview__table td > button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .archive-preview__enter { margin-left: auto; color: #526780; font-size: 9px; }
@@ -515,16 +505,14 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.archive-preview__state > i { color: #5b7599; font-size: 42px; }
 .archive-preview__state strong { color: #dfe9f7; font-size: 15px; }
-.archive-preview__state span { max-width: 560px; font-size: 12px; line-height: 1.7; }
 
 
 .archive-preview__error button {
   margin-top: 8px;
   padding: 9px 18px;
   border: 1px solid rgb(68 149 247 / 38%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgb(38 121 224 / 22%);
 }
 

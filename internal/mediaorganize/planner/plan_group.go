@@ -24,7 +24,6 @@ func (p *Planner) planGroupWithMatch(
 	title := strings.TrimSpace(key.title)
 	year := key.yearPtr()
 	season := key.seasonPtr()
-	episode := key.episodePtr()
 
 	if p.isAlreadyOrganizedRenameGroup(key, items) {
 		for _, entry := range items {
@@ -244,11 +243,11 @@ func (p *Planner) planGroupWithMatch(
 		ext := rules.FileExtension(entry.item.Name)
 		currentYear := year
 		currentSeason := season
-		currentEpisode := episode
+		var currentEpisode *int
 		if isTV {
 			currentSeason = entry.fileParsed.Season
 			currentEpisode = entry.fileParsed.Episode
-			// 文件级 Season=1 若只是"有集无季"的默认值，目录级明确季号（如「第2季」）优先
+			// 无明确季标记时，目录季号覆盖默认第一季。
 			if currentSeason != nil && *currentSeason == 1 && inferredSeason != nil && *inferredSeason > 1 &&
 				!rules.HasExplicitSeasonToken(entry.item.Name) {
 				currentSeason = inferredSeason
@@ -280,6 +279,8 @@ func (p *Planner) planGroupWithMatch(
 					currentSeason = season
 				}
 			}
+		} else {
+			currentSeason, currentEpisode = nil, nil
 		}
 
 		var seasonDirRename *moplan.PlanAction
@@ -345,9 +346,8 @@ func (p *Planner) planGroupWithMatch(
 		mode := "move"
 		if isRename {
 			mode = "rename"
-			srcDirName := p.scannedDirNames[entry.sourceDirID]
 			needsTVSeasonPlacement := p.tvFileNeedsSeasonFolderPlacement(key, entry)
-			isScattered := entry.sourceDirID == p.parentID || rules.IsGenericMediaDir(srcDirName)
+			isScattered := p.renameNeedsWorkFolder(entry)
 			if needsTVSeasonPlacement {
 				workDirRef := p.renameWorkDirRefForSeasonPlacement(key, entry, newFolderName)
 				targetParent, deps = p.resolveTargetParentForMove(workDirRef, isTV, currentSeason, seasonDirCache)
@@ -404,6 +404,12 @@ func (p *Planner) planGroupWithMatch(
 
 // recordNeedsMatch 记录需要用户手动匹配的组（供计划预览展示）。
 func (p *Planner) recordNeedsMatch(key groupKey, items []batchEntry, reason string, extra map[string]any) {
+	sourceIDs := make([]string, 0, len(items))
+	for _, item := range items {
+		if sourceID := strings.TrimSpace(item.item.ID); sourceID != "" {
+			sourceIDs = append(sourceIDs, sourceID)
+		}
+	}
 	entry := map[string]any{
 		"group_uid":  groupUIDOf(key),
 		"media_kind": key.mediaKind,
@@ -412,6 +418,7 @@ func (p *Planner) recordNeedsMatch(key groupKey, items []batchEntry, reason stri
 		"title":      key.title,
 		"reason":     reason,
 		"count":      len(items),
+		"source_ids": sourceIDs,
 	}
 	if key.hasYear {
 		entry["year"] = key.year
@@ -496,7 +503,19 @@ func (p *Planner) renameEntryNeedsPlacement(key groupKey, entry batchEntry) bool
 	if key.mediaKind != "movie" {
 		return false
 	}
-	return entry.sourceDirID == p.parentID || rules.IsGenericMediaDir(entry.sourceDirName)
+	return p.renameNeedsWorkFolder(entry)
+}
+
+// renameNeedsWorkFolder 为根目录、通用媒体目录和合集中的散落文件建立作品目录。
+func (p *Planner) renameNeedsWorkFolder(entry batchEntry) bool {
+	if entry.sourceDirID == p.parentID {
+		return true
+	}
+	name := entry.sourceDirName
+	if name == "" {
+		name = p.scannedDirNames[entry.sourceDirID]
+	}
+	return rules.IsGenericMediaDir(name) || rules.IsCollectionContainerDir(name)
 }
 
 func (p *Planner) renameWorkDirRefForSeasonPlacement(key groupKey, entry batchEntry, newFolderName string) string {

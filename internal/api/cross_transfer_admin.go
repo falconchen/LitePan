@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,15 +32,9 @@ type crossTransferScanSource struct {
 	AncestorIDs []string `json:"ancestor_ids"`
 }
 
-func (r crossTransferScanReq) roots() []crosstransfer.ScanRoot {
-	if len(r.Sources) == 0 {
-		return []crosstransfer.ScanRoot{{
-			ParentID:    r.SourceParentID,
-			DisplayPath: r.SourceDisplayPath,
-		}}
-	}
-	roots := make([]crosstransfer.ScanRoot, 0, len(r.Sources))
-	for _, source := range r.Sources {
+func toScanRoots(sources []crossTransferScanSource) []crosstransfer.ScanRoot {
+	roots := make([]crosstransfer.ScanRoot, 0, len(sources))
+	for _, source := range sources {
 		roots = append(roots, crosstransfer.ScanRoot{
 			ParentID:    source.ParentID,
 			DisplayPath: source.DisplayPath,
@@ -47,6 +42,16 @@ func (r crossTransferScanReq) roots() []crosstransfer.ScanRoot {
 		})
 	}
 	return roots
+}
+
+func (r crossTransferScanReq) roots() []crosstransfer.ScanRoot {
+	if len(r.Sources) == 0 {
+		return []crosstransfer.ScanRoot{{
+			ParentID:    r.SourceParentID,
+			DisplayPath: r.SourceDisplayPath,
+		}}
+	}
+	return toScanRoots(r.Sources)
 }
 
 func (h *Handler) crossTransferScan(w http.ResponseWriter, r *http.Request) {
@@ -239,14 +244,7 @@ func (h *Handler) crossTransferPlainEnqueue(w http.ResponseWriter, r *http.Reque
 		writeErr(w, err)
 		return
 	}
-	sources := make([]crosstransfer.ScanRoot, 0, len(req.Sources))
-	for _, src := range req.Sources {
-		sources = append(sources, crosstransfer.ScanRoot{
-			ParentID:    src.ParentID,
-			DisplayPath: src.DisplayPath,
-			AncestorIDs: src.AncestorIDs,
-		})
-	}
+	sources := toScanRoots(req.Sources)
 	result, err := h.crossTransfer.EnqueuePlain(r.Context(), crosstransfer.EnqueuePlainInput{
 		SourceAccountID:   req.SourceAccountID,
 		SourceAccountName: req.SourceAccountName,
@@ -264,4 +262,25 @@ func (h *Handler) crossTransferPlainEnqueue(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeOK(w, result)
+}
+
+func (h *Handler) crossTransferPlainEnqueueStream(w http.ResponseWriter, r *http.Request) {
+	if !ensureServiceReady(w, h.crossTransfer != nil) {
+		return
+	}
+	var req crossTransferPlainEnqueueReq
+	if err := decodeJSON(r, &req); err != nil {
+		writeErr(w, err)
+		return
+	}
+	ctx := context.WithoutCancel(r.Context())
+	h.streamCrossTransferNDJSON(w, r, func(emit func(crosstransfer.StreamEvent) error) error {
+		return h.crossTransfer.EnqueuePlainStream(ctx, crosstransfer.EnqueuePlainInput{
+			SourceAccountID: req.SourceAccountID, SourceAccountName: req.SourceAccountName,
+			SourceDriverType: req.SourceDriverType, TargetAccountID: req.TargetAccountID,
+			TargetAccountName: req.TargetAccountName, TargetDriverType: req.TargetDriverType,
+			TargetParentID: req.TargetParentID, TargetDisplayPath: req.TargetDisplayPath,
+			Sources: toScanRoots(req.Sources), Conflict: req.Conflict,
+		}, emit)
+	})
 }

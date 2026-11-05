@@ -328,7 +328,7 @@ func TestScanSourceDeepTreeDoesNotDeadlock(t *testing.T) {
 	var progressEvents int
 
 	go func() {
-		scanErr = service.ScanSourceStream(context.Background(), 1, "root", "md5", "/music", func(event StreamEvent) error {
+		scanErr = service.ScanSourcesStream(context.Background(), 1, []ScanRoot{{ParentID: "root", DisplayPath: "/music"}}, "md5", func(event StreamEvent) error {
 			if event["event"] == "progress" {
 				progressEvents++
 			}
@@ -362,7 +362,7 @@ func TestScanSourceReturnsDirectoryError(t *testing.T) {
 	drv.listErrors["broken"] = errors.New("上游列表失败")
 	service := newCleanupService(t, drv)
 
-	_, err := service.ScanSource(context.Background(), 1, "root", "md5", "/媒体")
+	_, err := service.ScanSources(context.Background(), 1, []ScanRoot{{ParentID: "root", DisplayPath: "/媒体"}}, "md5")
 	if err == nil || !strings.Contains(err.Error(), "/媒体/损坏目录") {
 		t.Fatalf("目录错误应带路径返回，得到 %v", err)
 	}
@@ -380,7 +380,7 @@ func TestScanSourceMarksIncompleteResult(t *testing.T) {
 	drv.children[""] = items
 	service := newCleanupService(t, drv)
 
-	result, err := service.ScanSource(context.Background(), 1, "root", "md5", "/大目录")
+	result, err := service.ScanSources(context.Background(), 1, []ScanRoot{{ParentID: "root", DisplayPath: "/大目录"}}, "md5")
 	if err != nil {
 		t.Fatalf("扫描失败: %v", err)
 	}

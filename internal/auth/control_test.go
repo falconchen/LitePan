@@ -147,12 +147,30 @@ func TestActiveRefreshReusesInitializationCredentials(t *testing.T) {
 	}
 }
 
-func TestConcurrentInlineAndPassiveShareRefresh(t *testing.T) {
-	f := newControlFixture(t, nil, nil)
+func TestConcurrentActivePassiveAndInlineShareRefresh(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	f := newControlFixture(t, nil, func(ctx context.Context, d *controlledDriver) error {
+		once.Do(func() { close(started) })
+		select {
+		case <-release:
+			return d.save(ctx)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
 	drv, err := f.mgr.Get(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	callsWhileBlocked := make(chan int32, 1)
+	go func() {
+		<-started
+		time.Sleep(20 * time.Millisecond)
+		callsWhileBlocked <- f.refreshes.Load()
+		close(release)
+	}()
 	runConcurrent(t, 60, func(i int) error {
 		if i%3 == 0 {
 			return drv.(*controlledDriver).renew(context.Background())
@@ -163,6 +181,10 @@ func TestConcurrentInlineAndPassiveShareRefresh(t *testing.T) {
 		}
 		return f.svc.Gate().HandlePassiveError(context.Background(), 1)
 	})
+	// 远端交换未完成时，主动、被动和驱动内联刷新都应排在同一把账号锁后。
+	if calls := <-callsWhileBlocked; calls != 1 {
+		t.Fatalf("锁内远端刷新次数=%d，期望 1", calls)
+	}
 	if f.refreshes.Load() != 1 {
 		t.Fatalf("并发刷新没有合并：%d", f.refreshes.Load())
 	}

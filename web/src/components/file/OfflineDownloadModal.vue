@@ -233,7 +233,7 @@ async function submit() {
   <AppModal :open="open" title="新建离线下载" size="lg" @close="emit('close')">
     <div class="offline-download-form">
       <div class="offline-capability">
-        <span class="offline-capability__icon"><SvgIcon name="cloud" :size="24" /></span>
+        <span class="offline-capability__icon"><SvgIcon name="hand-cloud" :size="22" /></span>
         <span class="offline-capability__body">
           <strong v-if="providerKind === 'builtin'">{{ accountName }}可使用内置下载器处理 HTTP/HTTPS 链接</strong>
           <strong v-else-if="supportsTorrent">{{ accountName }}支持链接和 BT 种子任务</strong>
@@ -246,10 +246,10 @@ async function submit() {
 
       <div v-if="showProviderPicker" class="offline-source-tabs offline-source-tabs--provider">
         <button type="button" :class="{ active: providerKind === 'native' }" @click="providerKind = 'native'; sourceMode = 'url'">
-          <SvgIcon name="cloud" :size="15" /> 原生下载器
+          <SvgIcon name="hand-cloud" :size="16" /> 原生下载器
         </button>
         <button type="button" :class="{ active: providerKind === 'builtin' }" @click="providerKind = 'builtin'; sourceMode = 'url'">
-          <SvgIcon name="download" :size="15" /> 内置下载器
+          <SvgIcon name="download" :size="16" /> 内置下载器
         </button>
       </div>
 
@@ -326,7 +326,7 @@ async function submit() {
                 @drop.prevent="onTorrentDrop"
                 @click="!parsingTorrent && torrentInput?.click()"
               >
-                <SvgIcon name="file" :size="30" />
+                <SvgIcon name="badge-file" :size="32" />
                 <strong>{{ parsingTorrent ? "正在上传并解析种子…" : "选择 .torrent 种子文件" }}</strong>
                 <small>也可以把种子文件拖到这里，最大 16 MiB</small>
                 <input ref="torrentInput" type="file" accept=".torrent,application/x-bittorrent" hidden @change="onTorrentInput" />
@@ -354,7 +354,7 @@ async function submit() {
       </div>
 
       <div class="offline-target">
-        <span class="offline-target__icon"><SvgIcon name="folder" :size="22" /></span>
+        <span class="offline-target__icon"><SvgIcon name="badge-folder" :size="22" /></span>
         <span class="offline-target__body"><small>保存位置</small><strong :title="targetDisplayPath">{{ targetDisplayPath }}</strong></span>
         <AppButton size="sm" @click="folderPickerOpen = true">更改目录</AppButton>
       </div>
@@ -362,7 +362,7 @@ async function submit() {
 
     <template #footer>
       <AppButton variant="primary" :disabled="submitDisabled" @click="submit">
-        <SvgIcon name="cloud" :size="17" />
+        <SvgIcon name="hand-cloud" :size="18" />
         {{ submitting ? "正在提交…" : "开始离线下载" }}
       </AppButton>
     </template>
@@ -383,8 +383,8 @@ async function submit() {
 
 <style scoped>
 .offline-download-form { display: flex; flex-direction: column; gap: 12px; }
-.offline-capability { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--tab-active-border); border-radius: 10px; background: var(--info-soft); }
-.offline-capability__icon { width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center; border-radius: 9px; background: var(--surface); color: var(--brand); }
+.offline-capability { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--tab-active-border); border-radius: var(--radius-control); background: var(--info-soft); }
+.offline-capability__icon { width: 38px; height: 38px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); background: var(--surface); color: var(--brand); }
 .offline-capability__body { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .offline-capability__body strong { color: var(--text); font-size: 14px; }
 .offline-capability__body small, .offline-field small { color: var(--text-muted); font-size: 12px; }
@@ -399,7 +399,7 @@ async function submit() {
   min-height: 248px;
   height: 248px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   overflow: hidden;
 }
@@ -491,7 +491,7 @@ async function submit() {
 .offline-field__label em { color: var(--text-muted); font-size: 11px; font-style: normal; font-weight: 400; }
 .offline-textarea { width: 100%; resize: none; min-height: 116px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; line-height: 1.6; box-sizing: border-box; }
 .offline-textarea:focus { outline: none; border-color: var(--brand); }
-.offline-torrent-drop { min-height: 0; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; border: 1px dashed var(--brand); border-radius: 11px; background: var(--surface); color: var(--brand); cursor: pointer; }
+.offline-torrent-drop { min-height: 0; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; border: 1px dashed var(--brand); border-radius: var(--radius-md); background: var(--surface); color: var(--brand); cursor: pointer; }
 .offline-torrent-drop strong { color: var(--text); }
 .offline-torrent-drop small { color: var(--text-muted); }
 .offline-torrent-drop.loading { cursor: wait; opacity: .75; }
@@ -501,7 +501,7 @@ async function submit() {
 .offline-torrent-file > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .offline-torrent-file > span:last-child { text-align: right; color: var(--text-muted); }
 .offline-torrent-file--head { position: sticky; top: 0; z-index: 1; background: var(--modal-bg, var(--surface)); color: var(--text-muted); }
-.offline-target { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-sunken); }
+.offline-target { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface-sunken); }
 .offline-target__icon { color: var(--brand); }
 .offline-target__body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .offline-target__body small { color: var(--text-muted); }

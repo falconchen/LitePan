@@ -17,8 +17,9 @@ import (
 
 type Driver struct {
 	driver.AuthRefreshControl
-	add    Addition
-	client *http.Client
+	add          Addition
+	client       *http.Client
+	uploadClient *http.Client
 
 	intervalGate driver.RequestIntervalGate
 	persist      driver.AuthPersistFunc
@@ -43,7 +44,6 @@ var config = driver.Config{
 	TokenLifetime:          7200 * time.Second,
 	RefreshAdvance:         15 * time.Minute,
 	ProvideHashes:          []string{"md5"},
-	RapidUploadHashes:      []string{"md5"},
 	UploadConflictPolicies: []string{"rename"},
 	SupportsAccountProfile: true,
 }
@@ -70,6 +70,9 @@ func (d *Driver) SetRequestIntervalGate(gate driver.RequestIntervalGate) { d.int
 func (d *Driver) Init(ctx context.Context) error {
 	if d.client == nil {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 30 * time.Second})
+	}
+	if d.uploadClient == nil {
+		d.uploadClient = httpx.NewUploadClient(d.client, 60*time.Second, config.UploadUseHTTP2)
 	}
 	d.deviceIDVal = normalizeDeviceID(d.add.DeviceID)
 
@@ -110,6 +113,7 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(context.Context) error {
 	httpx.CloseClient(d.client)
+	httpx.CloseClient(d.uploadClient)
 	return nil
 }
 
@@ -206,14 +210,9 @@ func (d *Driver) fetchFileDetail(ctx context.Context, fileID string) (fileEntry,
 }
 
 type listOptions struct {
-	dirType           *int
-	fileTypes         []any
-	resType           *int
-	needSubFolderStat bool
-	needPlayRecord    bool
-	orderBy           int
-	sortType          int
-	pageSize          int
+	orderBy  int
+	sortType int
+	pageSize int
 }
 
 func defaultBrowseListOptions() listOptions {
@@ -239,29 +238,13 @@ func recycleListOptions(page int) map[string]any {
 }
 
 func (o listOptions) listBody(parentID string, page int) map[string]any {
-	body := map[string]any{
+	return map[string]any{
 		"parentId": parentID,
 		"page":     page,
 		"pageSize": o.pageSize,
 		"orderBy":  o.orderBy,
 		"sortType": o.sortType,
 	}
-	if o.dirType != nil {
-		body["dirType"] = *o.dirType
-	}
-	if len(o.fileTypes) > 0 {
-		body["fileTypes"] = o.fileTypes
-	}
-	if o.resType != nil {
-		body["resType"] = *o.resType
-	}
-	if o.needSubFolderStat {
-		body["needSubFolderStat"] = true
-	}
-	if o.needPlayRecord {
-		body["needPlayRecord"] = true
-	}
-	return body
 }
 
 func (d *Driver) fetchFileList(ctx context.Context, body map[string]any) (listData, error) {

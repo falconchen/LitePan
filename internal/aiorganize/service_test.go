@@ -105,8 +105,8 @@ func TestEnhanceValidatesAndCachesResult(t *testing.T) {
 	if len(first.Items) != 1 || first.Items[0].Title != "千与千寻" {
 		t.Fatalf("识别结果异常: %+v", first)
 	}
-	if len(first.Items[0].Files) != 1 || first.Items[0].Files[0].SourceID != "source_1" {
-		t.Fatalf("虚构文件未被过滤: %+v", first.Items[0].Files)
+	if len(first.Items[0].Files) != 0 {
+		t.Fatalf("作品识别阶段不应保留逐文件结果: %+v", first.Items[0].Files)
 	}
 	second, err := svc.Enhance(context.Background(), req)
 	if err != nil {
@@ -114,6 +114,24 @@ func TestEnhanceValidatesAndCachesResult(t *testing.T) {
 	}
 	if second.Cached != 1 || calls != 1 {
 		t.Fatalf("缓存未命中: cached=%d calls=%d", second.Cached, calls)
+	}
+}
+
+func TestValidateResultsRejectsSeasonConflictingWithCandidate(t *testing.T) {
+	candidateSeason := 8
+	modelSeason := 1
+	items := validateResults([]recognition.Work{{
+		WorkID:          "work_1",
+		CandidateSeason: &candidateSeason,
+	}}, []recognition.WorkResult{{
+		WorkID:     "work_1",
+		Recognized: true,
+		Title:      "绝望主妇",
+		MediaType:  "tv",
+		Season:     &modelSeason,
+	}})
+	if len(items) != 1 || items[0].Season != nil {
+		t.Fatalf("AI 季号与明确候选季号冲突时应丢弃 AI 季号: %+v", items)
 	}
 }
 
@@ -134,6 +152,9 @@ func TestEnhanceReportsBatchProgress(t *testing.T) {
 	last := states[len(states)-1]
 	if last.Total != 1 || last.Completed != 1 || last.CurrentChunk != 1 || last.TotalChunks != 1 {
 		t.Fatalf("进度不完整: %+v", states)
+	}
+	if len(states) < 2 || states[1].CurrentBatchSize != 1 || states[1].AttemptTimeoutSeconds != 120 || states[1].AttemptStartedAt <= 0 {
+		t.Fatalf("未报告当前 AI 请求的倒计时信息: %+v", states)
 	}
 	states = states[:0]
 	if _, err := svc.EnhanceWithProgress(context.Background(), req, func(state recognition.BatchProgress) {
@@ -179,10 +200,10 @@ func TestEnhanceKeepsSuccessfulChunksWhenAnotherChunkFails(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(`{"error":"bad request"}`)),
 			}, nil
 		}
-		return chatHTTPResponse(t, `{"items":[{"work_id":"work_21","recognized":true,"title":"Up","year":2009,"media_type":"movie"}]}`), nil
+		return chatHTTPResponse(t, `{"items":[{"work_id":"work_11","recognized":true,"title":"Up","year":2009,"media_type":"movie"}]}`), nil
 	})
-	works := make([]recognition.Work, 0, 21)
-	for i := 1; i <= 21; i++ {
+	works := make([]recognition.Work, 0, 11)
+	for i := 1; i <= 11; i++ {
 		works = append(works, recognition.Work{
 			WorkID: fmt.Sprintf("work_%d", i),
 			Files:  []recognition.File{{SourceID: fmt.Sprintf("source_%d", i), Name: "movie.mkv"}},
@@ -192,8 +213,86 @@ func TestEnhanceKeepsSuccessfulChunksWhenAnotherChunkFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls != 2 || result.Failed != 20 || len(result.Items) != 1 || result.Items[0].WorkID != "work_21" {
+	if calls != 2 || result.Failed != 10 || len(result.Items) != 1 || result.Items[0].WorkID != "work_11" {
 		t.Fatalf("分片降级异常: calls=%d result=%+v", calls, result)
+	}
+}
+
+func TestEnhanceSamplesRepresentativeFiles(t *testing.T) {
+	var sent recognition.BatchRequest
+	svc := newTestService(t, func(r *http.Request) (*http.Response, error) {
+		var payload chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(payload.Messages) < 2 || json.Unmarshal([]byte(payload.Messages[1].Content), &sent) != nil {
+			t.Fatalf("模型请求缺少作品数据: %+v", payload.Messages)
+		}
+		return chatHTTPResponse(t, `{"items":[{"work_id":"work_1","recognized":false}]}`), nil
+	})
+	files := make([]recognition.File, 0, 100)
+	for i := 1; i <= 100; i++ {
+		files = append(files, recognition.File{SourceID: fmt.Sprintf("ep-%03d", i), Name: fmt.Sprintf("%03d.mp4", i)})
+	}
+	if _, err := svc.Enhance(context.Background(), recognition.BatchRequest{Works: []recognition.Work{{
+		WorkID: "work_1",
+		Files:  files,
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent.Works) != 1 || len(sent.Works[0].Files) != maxSampleFilesPerWork {
+		t.Fatalf("长剧集只应提交少量代表文件: %+v", sent.Works)
+	}
+	if sent.Works[0].Files[0].SourceID != "ep-001" || sent.Works[0].Files[len(sent.Works[0].Files)-1].SourceID != "ep-100" {
+		t.Fatalf("代表文件应覆盖首尾: %+v", sent.Works[0].Files)
+	}
+}
+
+func TestEnhanceShrinksBatchAfterTimeout(t *testing.T) {
+	calls := 0
+	states := make([]recognition.BatchProgress, 0)
+	svc := newTestService(t, func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls == 1 {
+			return nil, context.DeadlineExceeded
+		}
+		var payload chatRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		var request recognition.BatchRequest
+		if len(payload.Messages) < 2 || json.Unmarshal([]byte(payload.Messages[1].Content), &request) != nil {
+			t.Fatal("无法解析分批请求")
+		}
+		items := make([]recognition.WorkResult, 0, len(request.Works))
+		for _, work := range request.Works {
+			items = append(items, recognition.WorkResult{WorkID: work.WorkID, Recognized: true, Title: work.WorkID, MediaType: "movie"})
+		}
+		body, _ := json.Marshal(map[string]any{"items": items})
+		return chatHTTPResponse(t, string(body)), nil
+	})
+	works := make([]recognition.Work, 0, 4)
+	for i := 1; i <= 4; i++ {
+		works = append(works, recognition.Work{WorkID: fmt.Sprintf("work_%d", i), Files: []recognition.File{{SourceID: fmt.Sprintf("file_%d", i), Name: "unknown.mkv"}}})
+	}
+	result, err := svc.EnhanceWithProgress(context.Background(), recognition.BatchRequest{Works: works}, func(state recognition.BatchProgress) {
+		states = append(states, state)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 3 || len(result.Items) != 4 || result.Failed != 0 {
+		t.Fatalf("超时后未按更小批次收敛: calls=%d result=%+v", calls, result)
+	}
+	foundRetry := false
+	for _, state := range states {
+		if state.RetryingSmallerBatch && state.CurrentBatchSize == 2 && state.SplitDepth == 1 {
+			foundRetry = true
+			break
+		}
+	}
+	if !foundRetry {
+		t.Fatalf("缺少缩小批次的前端进度状态: %+v", states)
 	}
 }
 

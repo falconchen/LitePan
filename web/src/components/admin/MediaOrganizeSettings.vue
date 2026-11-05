@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
-import { getApiErrorMessage } from "@/api/client";
 import {
   fetchMediaOrganizeSettings,
   saveMediaOrganizeSettings,
@@ -15,9 +14,9 @@ import SettingsCard from "@/components/admin/SettingsCard.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
 import SettingsRow from "@/components/admin/SettingsRow.vue";
 import TmdbHostsHelpTip from "@/components/admin/TmdbHostsHelpTip.vue";
-import { useSettingsForm, bindSettingsPanelExpose } from "@/composables/useSettingsForm";
+import { useSettingsForm, bindSettingsPanelExpose, useSettingsSave } from "@/composables/useSettingsForm";
 import { useSettingsLoad } from "@/composables/useSettingsLoad";
-import { toast } from "@/composables/useToast";
+import { runTmdbTest } from "@/composables/useTmdbTest";
 import "@/styles/admin-shared.css";
 
 const ORGANIZE_SETTINGS_ACCENT = "#10b981";
@@ -42,7 +41,7 @@ const conflictPolicyOptions = [
 ];
 
 const { loading, loaded, runLoad } = useSettingsLoad();
-const saving = ref(false);
+const { saving, runSave } = useSettingsSave();
 const tmdbTesting = ref(false);
 const draggingTagIndex = ref<number | null>(null);
 const insertIndex = ref<number | null>(null);
@@ -276,25 +275,19 @@ async function loadSettings(options?: { silent?: boolean }) {
 
 async function saveSettings() {
   if (!settingsChanged.value) return;
-  saving.value = true;
-  try {
+  await runSave(async () => {
     flushTagOrderToSettings();
     const data = await saveMediaOrganizeSettings({ ...settings });
     Object.assign(settings, data);
     syncTagsFromSettings();
     snapshotBaseline();
-    toast.success("整理设置已保存");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存整理设置失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "整理设置已保存", errorMessage: "保存整理设置失败" });
 }
 
 async function testTmdb() {
   tmdbTesting.value = true;
   try {
-    const result = await testMediaOrganizeTmdb({
+    await runTmdbTest(() => testMediaOrganizeTmdb({
       tmdb_api_key: settings.tmdb_api_key,
       tmdb_language: settings.tmdb_language,
       tmdb_api_host: settings.tmdb_api_host,
@@ -303,20 +296,7 @@ async function testTmdb() {
       proxy_url: settings.proxy_url,
       proxy_username: settings.proxy_username,
       proxy_password: settings.proxy_password,
-    });
-    const apiOK = result.api_ok ?? result.ok;
-    const imageOK = result.image_ok ?? true;
-    if (apiOK && imageOK) {
-      toast.success("TMDB 连通正常：API ✓ 图片 ✓");
-    } else if (apiOK && !imageOK) {
-      toast.error("TMDB 部分异常：API ✓ 图片 ×");
-    } else if (!apiOK && imageOK) {
-      toast.error("TMDB 部分异常：API × 图片 ✓");
-    } else {
-      toast.error("TMDB 全部异常：API × 图片 ×");
-    }
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "TMDB 测试失败"));
+    }));
   } finally {
     tmdbTesting.value = false;
   }
@@ -684,7 +664,7 @@ defineExpose(
   padding: 6px 10px;
   background: color-mix(in srgb, var(--brand) 10%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--brand) 25%, var(--border));
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 13px;
   line-height: 1.2;
   color: var(--brand);
@@ -705,7 +685,7 @@ defineExpose(
   height: var(--tag-chip-height, 32px);
   min-height: var(--tag-chip-height, 32px);
   border: 1px dashed var(--brand);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--brand) 6%, transparent);
 }
 

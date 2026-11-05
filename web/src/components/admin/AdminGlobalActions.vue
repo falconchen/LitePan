@@ -125,7 +125,7 @@ function toggleTheme() {
   height: 16px;
   padding: 0 4px;
   border: 2px solid var(--surface);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: #fff;
   background: var(--danger);
   font-size: 10px;

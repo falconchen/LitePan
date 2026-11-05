@@ -17,11 +17,48 @@ const acquireTimeout = 10 * time.Second
 
 // accountRangeLimiter 让同一账号的本地代理与 FUSE Range 请求共享驱动声明的并发上限。
 type accountRangeLimiter struct {
-	mu       sync.Mutex
-	accounts map[int64]chan struct{}
+	mu        sync.Mutex
+	accounts  map[int64]chan struct{}
+	cooldowns map[int64]time.Time
+}
+
+func (l *accountRangeLimiter) coolDown(accountID int64, delay time.Duration) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.cooldowns == nil {
+		l.cooldowns = make(map[int64]time.Time)
+	}
+	until := time.Now().Add(delay)
+	if until.After(l.cooldowns[accountID]) {
+		l.cooldowns[accountID] = until
+	}
+}
+
+// waitCoolDown 等待账号冷却结束；没有冷却立即返回，取消上下文时返回取消错误。
+func (l *accountRangeLimiter) waitCoolDown(ctx context.Context, accountID int64) error {
+	for {
+		l.mu.Lock()
+		delay := time.Until(l.cooldowns[accountID])
+		l.mu.Unlock()
+		if delay <= 0 {
+			return nil
+		}
+		if err := waitTransferRetry(ctx, delay); err != nil {
+			return err
+		}
+	}
 }
 
 func (l *accountRangeLimiter) acquire(ctx context.Context, accountID int64, limit int) (func(), error) {
+	return l.acquireWithTimeout(ctx, accountID, limit, acquireTimeout)
+}
+
+// acquireBlocking 用于可持久化的后台传输：名额占满时等待，直到取得名额或任务被取消。
+func (l *accountRangeLimiter) acquireBlocking(ctx context.Context, accountID int64, limit int) (func(), error) {
+	return l.acquireWithTimeout(ctx, accountID, limit, 0)
+}
+
+func (l *accountRangeLimiter) acquireWithTimeout(ctx context.Context, accountID int64, limit int, timeout time.Duration) (func(), error) {
 	if accountID <= 0 || limit <= 0 {
 		return func() {}, nil
 	}
@@ -40,17 +77,28 @@ func (l *accountRangeLimiter) acquire(ctx context.Context, accountID int64, limi
 	}
 	l.mu.Unlock()
 
-	timer := time.NewTimer(acquireTimeout)
+	if timeout <= 0 {
+		select {
+		case sem <- struct{}{}:
+			return rangeLimitRelease(sem), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case sem <- struct{}{}:
-		var once sync.Once
-		return func() {
-			once.Do(func() { <-sem })
-		}, nil
+		return rangeLimitRelease(sem), nil
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-timer.C:
 		return nil, domain.Errorf(domain.CodeDriverError, "同账号并发拉流名额占满，等待超时")
 	}
+}
+
+func rangeLimitRelease(sem chan struct{}) func() {
+	var once sync.Once
+	return func() { once.Do(func() { <-sem }) }
 }

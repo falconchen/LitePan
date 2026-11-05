@@ -22,6 +22,23 @@ type unresolvedEnhancedDir struct {
 	examples  []string
 }
 
+func describeEnhancedDirs(entries []driver.FullListEntry) map[string]unresolvedEnhancedDir {
+	details := make(map[string]unresolvedEnhancedDir, 64)
+	for _, entry := range entries {
+		pid := strings.TrimSpace(entry.ParentID)
+		if pid == "" || pid == "0" {
+			continue
+		}
+		detail := details[pid]
+		detail.fileCount++
+		if name := strings.TrimSpace(entry.Name); name != "" && len(detail.examples) < 3 {
+			detail.examples = append(detail.examples, name)
+		}
+		details[pid] = detail
+	}
+	return details
+}
+
 func useEnhancedScan(ctx context.Context, task *domain.StrmTask, deps ScanDeps, runMode string) (bool, error) {
 	if !deps.Settings.Tool115TreeEnabled {
 		return false, nil
@@ -45,9 +62,7 @@ func scanEnhancedTask(
 	task *domain.StrmTask,
 	deps ScanDeps,
 	root string,
-	exts, metaExts map[string]struct{},
-	excludeDirs, excludeFiles []string,
-	minMediaBytes, metaMaxBytes int64,
+	rules scanRules,
 	failures *FailureCollector,
 ) (ScanResult, error) {
 	var result ScanResult
@@ -60,15 +75,52 @@ func scanEnhancedTask(
 	if err != nil {
 		return result, err
 	}
-	dirPaths, unresolved, err := resolveDirPaths(ctx, deps, task.AccountID, entries)
+	dirDetails := describeEnhancedDirs(entries)
+	dirPaths, unresolved, err := resolveDirPaths(ctx, deps, task.AccountID, dirDetails)
 	if err != nil {
 		return result, err
 	}
-	if len(unresolved) == 0 {
-		if derr := pruneDirCache(ctx, deps, task, entries); derr != nil {
-			log.Warn("strm dir cache prune failed", "account_id", task.AccountID, "err", derr.Error())
+	// 清单来自任务根，但缓存路径可能已过时；先核实矛盾，不能据此静默漏扫并删除本地文件。
+	rootSegs := splitRemotePath(task.Path)
+	pathConflict := ""
+	if len(entries) == 0 {
+		pathConflict = "115 全量清单为空，无法确认远端目录是否真实为空，本次已停止本地清理"
+		log.Warn("115 STRM 增强返回空清单，本次不清理本地文件",
+			"task_id", task.ID, "task_name", task.Name, "account_id", task.AccountID, "parent_id", task.ParentID)
+	}
+	for pid, oldPath := range dirPaths {
+		if _, ok := relDirsOf(oldPath, "check", rootSegs); ok {
+			continue
 		}
-	} else {
+		freshPath, resolveErr := resolveDirPathWithRetry(ctx, deps, task.AccountID, pid)
+		if resolveErr != nil {
+			if isNotFoundError(resolveErr) {
+				unresolved[pid] = dirDetails[pid]
+				if _, deleteErr := deps.DirCache.DeleteByIDs(ctx, task.AccountID, []string{pid}); deleteErr != nil {
+					return result, deleteErr
+				}
+				continue
+			}
+			return result, fmt.Errorf("核实 STRM 目录路径失败（目录 ID %s，任务根 %s）: %w", pid, task.Path, resolveErr)
+		}
+		if _, ok := relDirsOf(freshPath, "check", rootSegs); !ok {
+			pathConflict = "全量清单中的目录路径与任务根不一致，本次已停止本地清理，请检查任务目录和路径映射"
+			log.Warn("STRM 扫描目录路径不一致", "task_id", task.ID, "account_id", task.AccountID,
+				"directory_id", pid, "task_path", task.Path, "cached_path", oldPath, "resolved_path", freshPath)
+			continue
+		}
+		dirPaths[pid] = freshPath
+		if err := deps.DirCache.UpsertBatch(ctx, []domain.StrmDirCacheEntry{{
+			AccountID: task.AccountID, DirID: pid, DirPath: freshPath, LastSeenAt: time.Now(),
+		}}); err != nil {
+			return result, err
+		}
+	}
+	if len(unresolved) == 0 && pathConflict == "" {
+		if derr := pruneDirCache(ctx, deps, task, entries); derr != nil {
+			log.Warn("STRM 目录缓存清理失败", "account_id", task.AccountID, "err", derr.Error())
+		}
+	} else if len(unresolved) > 0 {
 		log.Info("115 STRM 增强检测到失效目录，本次跳过映射清理", "task_id", task.ID,
 			"task_name", task.Name, "account_id", task.AccountID, "directory_count", len(unresolved))
 	}
@@ -91,18 +143,11 @@ func scanEnhancedTask(
 		}
 	}
 
-	rootSegs := splitRemotePath(task.Path)
-	outputFolder := TaskRelDir(task.GroupDir, task.OutputFolder)
-	var candidates []mediaCandidate
-	var metadataItems []metadataItem
-	dirHasMedia := make(map[string]bool)
-	subtreeHasMedia := make(map[string]bool)
-	state := &branchScanState{
-		skippedDirs:    make(map[string]struct{}),
-		metadataDirs:   make(map[string]metadataDirectory),
-		cleanupScopes:  []cleanupScope{{recursive: true}},
-		remoteChildren: nil, // 清单不含空目录，禁用目录级清理避免误删
-	}
+	harvest := newScanHarvest()
+	state := harvest.state
+	state.cleanupBlockedReason = pathConflict
+	state.cleanupScopes = []cleanupScope{{recursive: true}}
+	state.remoteChildren = nil // 清单不含空目录，禁用目录级清理避免误删
 	if len(unresolved) > 0 {
 		totalFiles := 0
 		for _, detail := range unresolved {
@@ -119,37 +164,43 @@ func scanEnhancedTask(
 		if _, missing := unresolved[pid]; missing {
 			continue
 		}
-		if matchesKeywordRules(e.Name, excludeFiles) {
+		if matchesKeywordRules(e.Name, rules.excludeFiles) {
 			continue
 		}
 		relDirs, ok := relDirsOf(dirPaths[pid], e.Name, rootSegs)
 		if !ok {
 			continue // 远端路径不在任务根范围内，忽略
 		}
+		if matchesDirKeywordRules(relDirs, rules.excludeDirs) {
+			continue
+		}
 		recordMetadataDirectory(state.metadataDirs, e.ParentID, relDirs)
-		classified := classifyScanFile(e.FileID, e.Name, outputFolder, e.Size, relDirs, exts, metaExts, minMediaBytes, metaMaxBytes, task.SyncMetadata)
+		classified := rules.classify(e.FileID, e.Name, e.Size, relDirs)
 		if classified.hasMedia {
-			candidates = append(candidates, classified.media)
-			dirHasMedia[dirKey(relDirs)] = true
-			markSubtreeMedia(subtreeHasMedia, relDirs)
+			harvest.candidates = append(harvest.candidates, classified.media)
+			harvest.dirHasMedia[dirKey(relDirs)] = true
+			markSubtreeMedia(harvest.subtreeHasMedia, relDirs)
 			continue
 		}
 		if classified.hasMetadata {
-			metadataItems = append(metadataItems, classified.metadata)
+			harvest.metadataItems = append(harvest.metadataItems, classified.metadata)
 		}
 	}
 
-	log.Info("strm enhanced scan", "task_id", task.ID, "task_name", task.Name,
+	log.Info("STRM 增强扫描完成", "task_id", task.ID, "task_name", task.Name,
 		"account_id", task.AccountID, "remote_files", len(entries),
-		"candidates", len(candidates), "mode", "full-list")
+		"candidates", len(harvest.candidates), "mode", "full-list")
 
-	return finalizeScan(ctx, task, deps, scanHarvest{
-		candidates:      candidates,
-		metadataItems:   metadataItems,
-		state:           state,
-		dirHasMedia:     dirHasMedia,
-		subtreeHasMedia: subtreeHasMedia,
-	}, false, exts, metaExts, minMediaBytes, metaMaxBytes, root, failures)
+	return finalizeScan(ctx, task, deps, harvest, false, rules, root, failures)
+}
+
+func matchesDirKeywordRules(dirs, rules []string) bool {
+	for _, dir := range dirs {
+		if matchesKeywordRules(dir, rules) {
+			return true
+		}
+	}
+	return false
 }
 
 // pruneDirCache 清理“任务根范围内、本次清单未出现”的 pid→路径 记录：
@@ -199,39 +250,17 @@ func pruneDirCache(ctx context.Context, deps ScanDeps, task *domain.StrmTask, en
 
 // resolveDirPaths 返回 pid→完整远端路径 映射：
 // 优先查 SQLite 缓存，未命中的调驱动 ResolveDirPath 反查并落库。
-func resolveDirPaths(ctx context.Context, deps ScanDeps, accountID int64, entries []driver.FullListEntry) (map[string]string, map[string]unresolvedEnhancedDir, error) {
+func resolveDirPaths(ctx context.Context, deps ScanDeps, accountID int64, details map[string]unresolvedEnhancedDir) (map[string]string, map[string]unresolvedEnhancedDir, error) {
 	out := make(map[string]string, 64)
 	unresolved := make(map[string]unresolvedEnhancedDir)
 	if deps.DirCache == nil || deps.Files == nil {
 		return out, unresolved, nil
 	}
-	seen := make(map[string]struct{}, 64)
-	fileCounts := make(map[string]int, 64)
-	examples := make(map[string][]string, 64)
-	for _, e := range entries {
-		pid := strings.TrimSpace(e.ParentID)
-		if pid == "" || pid == "0" {
-			out[pid] = ""
-			continue
-		}
-		if _, dup := seen[pid]; dup {
-			fileCounts[pid]++
-			if len(examples[pid]) < 3 && strings.TrimSpace(e.Name) != "" {
-				examples[pid] = append(examples[pid], strings.TrimSpace(e.Name))
-			}
-			continue
-		}
-		seen[pid] = struct{}{}
-		fileCounts[pid] = 1
-		if strings.TrimSpace(e.Name) != "" {
-			examples[pid] = []string{strings.TrimSpace(e.Name)}
-		}
-	}
-	if len(seen) == 0 {
+	if len(details) == 0 {
 		return out, unresolved, nil
 	}
-	ids := make([]string, 0, len(seen))
-	for pid := range seen {
+	ids := make([]string, 0, len(details))
+	for pid := range details {
 		ids = append(ids, pid)
 	}
 	sort.Strings(ids)
@@ -266,7 +295,7 @@ func resolveDirPaths(ctx context.Context, deps ScanDeps, accountID int64, entrie
 		p, rerr := resolveDirPathWithRetry(ctx, deps, accountID, pid)
 		if rerr != nil {
 			if isNotFoundError(rerr) {
-				unresolved[pid] = unresolvedEnhancedDir{fileCount: fileCounts[pid], examples: examples[pid]}
+				unresolved[pid] = details[pid]
 				continue
 			}
 			if flushErr := flush(); flushErr != nil {
@@ -312,20 +341,16 @@ func isNotFoundError(err error) bool {
 
 // relDirsOf 把远端完整路径裁掉任务根前缀，得到本地相对目录。
 // 文件直接在任务根下时返回空切片；远端路径不在任务根内时返回 false。
+// relDirsOf 切出 dirPath 相对任务根的子目录段。
+//
+// dirPath 是远端路径字符串（段间用 "/" 分隔），rootSegs 是任务根的目录段。
+// 目录名允许自带斜杠（例：一个名为 abc/def/ghi 的目录），它拼出来的路径和三层目录
+// 完全一样，切法见 segmentsBelowRoot。对不上就返回 false，走“路径不一致”的保护。
 func relDirsOf(dirPath, fileName string, rootSegs []string) ([]string, bool) {
-	segs := splitRemotePath(dirPath)
-	if len(segs) < len(rootSegs) {
-		return nil, false
-	}
-	for i := range rootSegs {
-		if !strings.EqualFold(segs[i], rootSegs[i]) {
-			return nil, false
-		}
-	}
 	if strings.TrimSpace(fileName) == "" {
 		return nil, false
 	}
-	return segs[len(rootSegs):], true
+	return segmentsBelowRoot(splitRemotePath(dirPath), rootSegs)
 }
 
 func splitRemotePath(p string) []string {

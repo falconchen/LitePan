@@ -13,7 +13,7 @@ withDefaults(
 
 <template>
   <div class="state-block" :style="{ minHeight }">
-    <BusySpinner v-if="loading" variant="notch" :size="28" color="var(--brand)" />
+    <BusySpinner v-if="loading" variant="notch" :size="26" color="var(--brand)" />
     <span>{{ message }}</span>
   </div>
 </template>

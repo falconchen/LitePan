@@ -47,11 +47,11 @@ export interface ConfirmState extends ConfirmOptions {
 }
 
 export const CONFIRM_ICON_SVG: Record<ConfirmIcon, string> = {
-  warning: "notify-warning",
-  trash: "confirm-trash",
-  error: "notify-error",
-  question: "notify-info",
-  info: "notify-info",
+  warning: "badge-notify-warning",
+  trash: "hand-confirm-trash",
+  error: "badge-notify-error",
+  question: "badge-notify-info",
+  info: "badge-notify-info",
 };
 
 export const CONFIRM_ICON_TONE: Record<ConfirmIcon, "warning" | "danger" | "info"> = {

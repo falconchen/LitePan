@@ -161,7 +161,11 @@ func (m *Manager) BatchDelete(ctx context.Context, taskIDs []string, deleteUploa
 			accountID int64
 			parent    string
 		}
-		byGroup := map[groupKey][]string{}
+		type groupItem struct {
+			id     string
+			fileID string
+		}
+		byGroup := map[groupKey][]groupItem{}
 		var order []groupKey
 		for _, it := range items {
 			if _, deleted := rootDeletedBatches[it.task.BatchID]; deleted {
@@ -177,20 +181,24 @@ func (m *Manager) BatchDelete(ctx context.Context, taskIDs []string, deleteUploa
 			if _, ok := byGroup[g]; !ok {
 				order = append(order, g)
 			}
-			byGroup[g] = append(byGroup[g], it.fileID)
+			byGroup[g] = append(byGroup[g], groupItem{id: it.id, fileID: it.fileID})
 		}
 		for _, g := range order {
+			fileIDs := make([]string, 0, len(byGroup[g]))
+			for _, gi := range byGroup[g] {
+				fileIDs = append(fileIDs, gi.fileID)
+			}
 			var err error
 			if m.files != nil {
-				err = m.files.DeleteFiles(ctx, g.accountID, byGroup[g], g.parent)
+				err = m.files.DeleteFiles(ctx, g.accountID, fileIDs, g.parent)
 			} else {
-				err = m.deleteUploadedFiles(ctx, g.accountID, byGroup[g])
+				err = m.deleteUploadedFiles(ctx, g.accountID, fileIDs)
 			}
 			if err != nil {
-				for _, it := range items {
-					if it.task.AccountID == g.accountID && it.task.TargetPath == g.parent && it.fileID != "" {
-						failedByID[it.id] = err.Error()
-					}
+				// 只标记本组任务失败，避免把同账号同目录下其它批次
+				// （尤其已整目录删除成功的）任务连坐标错。
+				for _, gi := range byGroup[g] {
+					failedByID[gi.id] = err.Error()
 				}
 			}
 		}
@@ -258,6 +266,10 @@ func isTerminalUploadStatus(status string) bool {
 func (m *Manager) cleanupLocalSourceAfterDelete(st *taskState) {
 	if st == nil || st.SourceType == SourceTypeServerLocal {
 		return
+	}
+	if st.SourceType == SourceTypeCrossTransfer {
+		m.removeLocalFile(st.localPath + ".download")
+		m.removeLocalFile(st.localPath + ".download.tmp")
 	}
 	if st.CleanupLocalMode != "" {
 		m.cleanupLocalSource(st.localPath, st.CleanupLocalPath, st.CleanupLocalMode)

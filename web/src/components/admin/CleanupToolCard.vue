@@ -11,10 +11,11 @@ import {
 } from "@/api/spaceCleanup";
 import { confirm } from "@/composables/useConfirm";
 import { toast } from "@/composables/useToast";
-import { formatSize } from "@/utils/format";
+import { containsQuery, formatSize } from "@/utils/format";
 import AppButton from "@/components/base/AppButton.vue";
 import AppModal from "@/components/base/AppModal.vue";
-import CloudToolCard from "@/components/admin/CloudToolCard.vue";
+import ToolCard from "@/components/admin/ToolCard.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 interface DisplayItem {
   key: string;
@@ -25,8 +26,6 @@ interface DisplayItem {
   paths: string[];
   sizeBytes: number;
   memoryBytes: number;
-  fileCount: number;
-  dirCount: number;
 }
 
 interface DisplayGroup {
@@ -79,8 +78,6 @@ const displayGroups = computed<DisplayGroup[]>(() => {
             paths: [],
             sizeBytes: 0,
             memoryBytes: 0,
-            fileCount: 0,
-            dirCount: 0,
           };
           buckets.set(key, display);
         }
@@ -88,8 +85,6 @@ const displayGroups = computed<DisplayGroup[]>(() => {
         if (item.path) display.paths.push(item.path);
         display.sizeBytes += item.size_bytes;
         display.memoryBytes += item.memory_bytes ?? 0;
-        display.fileCount += item.file_count ?? 0;
-        display.dirCount += item.dir_count ?? 0;
       }
       return {
         key: group.key,
@@ -144,8 +139,7 @@ const statValue = computed(() => (report.value ? healthScore.value : "—"));
 const statLabel = computed(() => (report.value ? "综合评分" : "等待体检"));
 
 function matches(title: string) {
-  const query = props.searchQuery.trim().toLowerCase();
-  return !query || title.toLowerCase().includes(query);
+  return containsQuery(title, props.searchQuery);
 }
 
 function replaceSelected(next: Set<string>) {
@@ -187,15 +181,15 @@ function toggleExpanded(key: string) {
 function categoryIcon(category: string) {
   switch (category) {
     case "strm":
-      return "fa-film";
+      return "film";
     case "temp":
-      return "fa-broom";
+      return "broom";
     case "logs":
-      return "fa-file-lines";
+      return "file-lines";
     case "cache":
-      return "fa-bolt";
+      return "bolt";
     default:
-      return "fa-database";
+      return "hand-database";
   }
 }
 
@@ -346,7 +340,7 @@ async function executeCleanup() {
 
 <template>
   <div v-show="matches('垃圾清理工具')">
-    <CloudToolCard
+    <ToolCard
       :enabled="true"
       name="垃圾清理工具"
       driver="本地数据 · 扫描预览后清理"
@@ -361,7 +355,7 @@ async function executeCleanup() {
           {{ scanning ? "扫描中…" : "开始扫描" }}
         </AppButton>
       </template>
-    </CloudToolCard>
+    </ToolCard>
 
     <AppModal :open="open" title="垃圾清理" size="lg" @close="closeTool">
       <div v-if="scanning && !report" class="cleanup-loading">
@@ -393,7 +387,7 @@ async function executeCleanup() {
         </section>
 
         <div v-if="lastResult" class="cleanup-result" :class="{ 'cleanup-result--warn': lastResult.failed_items > 0 }">
-          <i class="fas fa-circle-check" />
+          <SvgIcon name="circle-check" size="1em" />
           <span>
             已清理 {{ lastResult.cleaned_items }} 项，释放 {{ releaseText(lastResult.freed_bytes, lastResult.memory_freed_bytes) }}
             <template v-if="lastResult.skipped_items > 0">；{{ lastResult.skipped_items }} 项因状态变化被跳过</template>
@@ -410,7 +404,7 @@ async function executeCleanup() {
         <div v-if="displayGroups.length" class="cleanup-groups">
           <section v-for="group in displayGroups" :key="group.key" class="cleanup-group">
             <header class="cleanup-group__head">
-              <span class="cleanup-group__icon"><i class="fas" :class="categoryIcon(group.key)" /></span>
+              <span class="cleanup-group__icon"><SvgIcon :name="categoryIcon(group.key)" size="1em" /></span>
               <span class="cleanup-group__title">
                 <strong>{{ group.label }}</strong>
                 <small>{{ group.description }}</small>
@@ -429,7 +423,7 @@ async function executeCleanup() {
                   :aria-label="`选择${item.name}`"
                   @change="toggleItems(item.items)"
                 />
-                <span class="cleanup-item__icon"><i class="fas" :class="categoryIcon(group.key)" /></span>
+                <span class="cleanup-item__icon"><SvgIcon :name="categoryIcon(group.key)" size="1em" /></span>
                 <div class="cleanup-item__main">
                   <div class="cleanup-item__line">
                     <strong>{{ item.name }}</strong>
@@ -442,7 +436,7 @@ async function executeCleanup() {
                   <template v-else-if="item.paths.length > 1">
                     <button class="cleanup-item__paths-toggle" type="button" @click="toggleExpanded(item.key)">
                       {{ expanded.has(item.key) ? "收起路径" : `查看 ${item.paths.length} 个具体路径` }}
-                      <i class="fas" :class="expanded.has(item.key) ? 'fa-chevron-up' : 'fa-chevron-down'" />
+                      <SvgIcon :name="expanded.has(item.key) ? 'chevron-up' : 'chevron-down'" size="1em" />
                     </button>
                     <div v-if="expanded.has(item.key)" class="cleanup-item__paths">
                       <code v-for="path in item.paths" :key="path">{{ path }}</code>
@@ -455,14 +449,14 @@ async function executeCleanup() {
         </div>
 
         <div v-else class="cleanup-empty">
-          <span class="cleanup-empty__icon"><i class="fas fa-shield" /></span>
+          <span class="cleanup-empty__icon"><SvgIcon name="shield" size="1em" /></span>
           <strong>本地很干净</strong>
           <span>没有发现可清理项目</span>
         </div>
       </template>
 
       <div v-else class="cleanup-empty">
-        <span class="cleanup-empty__icon cleanup-empty__icon--warn"><i class="fas fa-triangle-exclamation" /></span>
+        <span class="cleanup-empty__icon cleanup-empty__icon--warn"><SvgIcon name="triangle-exclamation" size="1em" /></span>
         <strong>扫描没有完成</strong>
         <span>{{ scanError || "请稍后重新扫描" }}</span>
         <AppButton size="sm" variant="secondary" :disabled="scanning" @click="scan">重新扫描</AppButton>
@@ -506,10 +500,8 @@ async function executeCleanup() {
   border: 3px solid var(--border);
   border-top-color: var(--primary);
   border-radius: 50%;
-  animation: cleanup-spin 0.8s linear infinite;
+  animation: spin 0.8s linear infinite;
 }
-
-@keyframes cleanup-spin { to { transform: rotate(360deg); } }
 
 .cleanup-hero {
   --cleanup-score-color: var(--success);
@@ -634,7 +626,7 @@ async function executeCleanup() {
   border-bottom: 1px solid var(--border-soft);
 }
 
-.cleanup-group__icon { width: 28px; height: 28px; border-radius: 8px; font-size: 12px; }
+.cleanup-group__icon { width: 28px; height: 28px; border-radius: var(--radius-sm); font-size: 12px; }
 .cleanup-group__title { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .cleanup-group__title strong { font-size: 13px; }
 .cleanup-group__title small { margin-top: 1px; font-size: 10px; color: var(--text-muted); }
@@ -653,7 +645,7 @@ async function executeCleanup() {
 .cleanup-item:first-child { border-top: 0; }
 .cleanup-item:hover { background: color-mix(in srgb, var(--primary) 2%, var(--surface)); }
 .cleanup-item > input { width: 16px; height: 16px; margin: 7px 0 0; flex: 0 0 auto; accent-color: var(--primary); }
-.cleanup-item__icon { width: 30px; height: 30px; border-radius: 9px; font-size: 12px; }
+.cleanup-item__icon { width: 30px; height: 30px; border-radius: var(--radius-sm); font-size: 12px; }
 .cleanup-item__main { min-width: 0; flex: 1; }
 .cleanup-item__line { min-width: 0; display: flex; align-items: center; gap: 7px; }
 .cleanup-item__line strong { font-size: 13px; color: var(--text); }

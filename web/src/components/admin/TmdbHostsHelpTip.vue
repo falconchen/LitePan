@@ -91,7 +91,7 @@ const open = ref(false);
 .tmdb-hosts-panel__code {
   margin: 0;
   padding: 8px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface-sunken);
   border: 1px solid var(--border-soft);
   font-size: 11px;

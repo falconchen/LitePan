@@ -45,7 +45,7 @@ func ApplyPending(ctx context.Context, opts ApplyOptions) (Status, error) {
 		}
 		return Status{}, fmt.Errorf("read pending restore: %w", err)
 	}
-	if plan.Version != 1 || !validRecordID(plan.ID) || plan.StageDir != plan.ID || !validRecordID(plan.SourceID) || (plan.Scope != ScopeSettings && plan.Scope != ScopeFull) {
+	if !plan.valid() || (plan.Scope != ScopeSettings && plan.Scope != ScopeFull) {
 		return Status{}, fmt.Errorf("pending restore manifest is invalid")
 	}
 	stageDir := filepath.Join(restoreDir, "staging", plan.StageDir)
@@ -312,4 +312,9 @@ func pruneRollbackDirs(root string, keep int, log *slog.Logger) {
 			log.Warn("清理旧恢复回滚副本失败", "dir", oldest, "err", err)
 		}
 	}
+}
+
+// valid 校验恢复清单的基础字段；Scope 的合法性由调用方按场景另行判断。
+func (p pendingPlan) valid() bool {
+	return p.Version == 1 && validRecordID(p.ID) && p.StageDir == p.ID && validRecordID(p.SourceID)
 }

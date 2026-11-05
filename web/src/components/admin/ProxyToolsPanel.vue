@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { containsQuery } from "@/utils/format";
 import { computed, onMounted, reactive, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
 import {
@@ -9,17 +10,18 @@ import {
   type EmbyConfig,
   type EmbyConfigUpdate,
 } from "@/api/emby";
-import { fetchFnosConfig, saveFnosConfig, testFnosConfig } from "@/api/fnos";
+import { fetchFnosConfig, saveFnosConfig, saveFnosManagement, testFnosConfig, testFnosManagement } from "@/api/fnos";
 import { confirm } from "@/composables/useConfirm";
 import { copyTextToClipboard, toast } from "@/composables/useToast";
 import AppButton from "@/components/base/AppButton.vue";
+import AppModal from "@/components/base/AppModal.vue";
+import ToolCard from "@/components/admin/ToolCard.vue";
 import ProxyWorkspace, { type ProxyField, type ProxyWorkspaceItem } from "@/components/admin/ProxyWorkspace.vue";
 
 const props = withDefaults(defineProps<{ searchQuery?: string }>(), { searchQuery: "" });
 
 function matches(title: string) {
-  const q = props.searchQuery.trim().toLowerCase();
-  return !q || title.toLowerCase().includes(q);
+  return containsQuery(title, props.searchQuery);
 }
 
 /* ── Emby 多配置 ── */
@@ -30,13 +32,17 @@ const embySelectedID = ref("");
 const embySaving = ref(false);
 const embyTesting = ref(false);
 const embyRefreshing = ref(false);
-const embyDraft = reactive<Record<string, string>>({
-  name: "",
-  emby_url: "",
-  api_key: "",
-  proxy_port: "",
-  direct_strm_clients: "",
-});
+function emptyEmbyDraft(name = "") {
+  return {
+    name,
+    emby_url: "",
+    api_key: "",
+    proxy_port: "",
+    direct_strm_clients: "",
+  };
+}
+
+const embyDraft = reactive<Record<string, string>>(emptyEmbyDraft());
 
 const embyRunning = computed(() => embyConfigs.value.filter((item) => item.running).length);
 const selectedEmby = computed(() => embyConfigs.value.find((item) => item.id === embySelectedID.value) || null);
@@ -56,18 +62,18 @@ const embyItems = computed<ProxyWorkspaceItem[]>(() =>
 const embyFields: ProxyField[] = [
   {
     key: "emby_url",
-    label: "Emby 地址",
+    label: "Emby/Jellyfin 地址",
     placeholder: "http://192.168.1.10:8096",
-    helpTitle: "Emby 地址说明",
-    helpBody: "你的 Emby 服务器地址，例如 <code>http://192.168.1.10:8096</code>。<br>给 LitePan 连 Emby 用的，播放器里不要填这个。",
+    helpTitle: "媒体服务器地址说明",
+    helpBody: "你的 Emby 或 Jellyfin 服务器地址，例如 <code>http://192.168.1.10:8096</code>。<br>给 LitePan 连接媒体服务器使用，播放器里不要填这个。",
   },
   {
     key: "api_key",
     label: "API Key",
     type: "password",
-    placeholder: "Emby API Key",
+    placeholder: "Emby/Jellyfin API Key",
     helpTitle: "API Key 说明",
-    helpBody: "在 Emby 后台「API 密钥」里生成一个，粘贴到这里，用来连接 Emby 和刷库。",
+    helpBody: "在 Emby 或 Jellyfin 后台生成 API Key，粘贴到这里，用来连接媒体服务器、扫库和补全媒体信息。",
   },
   {
     key: "proxy_port",
@@ -82,7 +88,7 @@ const embyFields: ProxyField[] = [
     label: "STRM 直读客户端",
     placeholder: "默认留空",
     helpTitle: "STRM 直读客户端说明",
-    helpBody: "一般无需填写。播放器无法通过反代播放 STRM 时，可让它自己读取 STRM 中的地址。<br>填写客户端关键字，多个用分号隔开，例如 <code>XXXPlay;YYYPlayer</code>；未匹配的播放器仍由 LitePan 代取地址。<br>外网播放时，请确保 STRM 的 URL 基础地址可从外网访问。",
+    helpBody: "一般无需填写。播放器无法通过反代播放 STRM 时，可让它自己读取 STRM 中的地址。<br>填写客户端关键字，多个用分号隔开，例如 <code>XXXPlay;YYYPlayer</code>；未匹配的播放器仍由 LitePan 代取地址，填错了反而播不了。<br>外网播放时，请确保 STRM 的 URL 基础地址可从外网访问。",
   },
 ];
 
@@ -93,13 +99,7 @@ function openEmby() {
     loadEmbyDraft(embyConfigs.value[0]);
   } else {
     embySelectedID.value = "";
-    Object.assign(embyDraft, {
-      name: "",
-      emby_url: "",
-      api_key: "",
-      proxy_port: "",
-      direct_strm_clients: "",
-    });
+    Object.assign(embyDraft, emptyEmbyDraft());
   }
 }
 
@@ -122,13 +122,7 @@ function selectEmby(id: string) {
 
 function addEmby() {
   embySelectedID.value = "";
-  Object.assign(embyDraft, {
-    name: embyConfigs.value.length ? `Emby ${embyConfigs.value.length + 1}` : "Emby",
-    emby_url: "",
-    api_key: "",
-    proxy_port: "",
-    direct_strm_clients: "",
-  });
+  Object.assign(embyDraft, emptyEmbyDraft(embyConfigs.value.length ? `媒体服务 ${embyConfigs.value.length + 1}` : "媒体服务"));
 }
 
 function updatesFromConfigs(configs: EmbyConfig[]): EmbyConfigUpdate[] {
@@ -151,7 +145,7 @@ async function persistEmby(items: EmbyConfigUpdate[], message: string, enabled =
     toast.success(message);
     return true;
   } catch (error) {
-    toast.error(getApiErrorMessage(error, "保存 Emby 配置失败"));
+    toast.error(getApiErrorMessage(error, "保存 Emby/Jellyfin 配置失败"));
     return false;
   } finally {
     embySaving.value = false;
@@ -160,7 +154,7 @@ async function persistEmby(items: EmbyConfigUpdate[], message: string, enabled =
 
 async function saveEmby() {
   if (!embyDraft.name.trim() || !embyDraft.emby_url.trim() || !embyDraft.api_key.trim() || !embyDraft.proxy_port.trim()) {
-    toast.error("请填写配置名称、Emby 地址、API Key 和反代端口");
+    toast.error("请填写配置名称、Emby/Jellyfin 地址、API Key 和反代端口");
     return;
   }
   const items = updatesFromConfigs(embyConfigs.value);
@@ -179,7 +173,7 @@ async function saveEmby() {
   } else {
     items.push(next);
   }
-  if (await persistEmby(items, editing ? "Emby 配置已保存" : "Emby 配置已添加")) {
+  if (await persistEmby(items, editing ? "Emby/Jellyfin 配置已保存" : "Emby/Jellyfin 配置已添加")) {
     if (editing) {
       embySelectedID.value = editing.id;
     } else {
@@ -201,9 +195,9 @@ async function testEmby() {
       proxy_port: embyDraft.proxy_port,
       direct_strm_clients: embyDraft.direct_strm_clients,
     });
-    toast.success("Emby 连接成功");
+    toast.success("Emby/Jellyfin 连接成功");
   } catch (error) {
-    toast.error(getApiErrorMessage(error, "Emby 连接失败"));
+    toast.error(getApiErrorMessage(error, "Emby/Jellyfin 连接失败"));
   } finally {
     embyTesting.value = false;
   }
@@ -214,9 +208,9 @@ async function refreshEmby() {
   embyRefreshing.value = true;
   try {
     await refreshEmbyLibrary({ config_id: selectedEmby.value.id, mode: "global" });
-    toast.success(`已通知「${selectedEmby.value.name}」刷库`);
+    toast.success(`已通知「${selectedEmby.value.name}」扫描全部媒体库`);
   } catch (error) {
-    toast.error(getApiErrorMessage(error, "刷库失败"));
+    toast.error(getApiErrorMessage(error, "Emby/Jellyfin 扫库失败"));
   } finally {
     embyRefreshing.value = false;
   }
@@ -226,38 +220,32 @@ async function deleteEmby() {
   const config = selectedEmby.value;
   if (!config) return;
   const ok = await confirm({
-    title: "删除 Emby 配置？",
-    message: `将删除「${config.name}」。引用它的自动联动需要重新选择 Emby。`,
+    title: "删除 Emby/Jellyfin 配置？",
+    message: `将删除「${config.name}」。引用它的自动联动需要重新选择 Emby/Jellyfin 配置。`,
     confirmText: "确认删除",
     cancelText: "取消",
     danger: true,
   }).catch(() => false);
   if (!ok) return;
-  await persistEmby(updatesFromConfigs(embyConfigs.value.filter((item) => item.id !== config.id)), "Emby 配置已删除");
+  await persistEmby(updatesFromConfigs(embyConfigs.value.filter((item) => item.id !== config.id)), "Emby/Jellyfin 配置已删除");
   if (embyConfigs.value.length) {
     embySelectedID.value = embyConfigs.value[0].id;
     loadEmbyDraft(embyConfigs.value[0]);
   } else {
     embySelectedID.value = "";
-    Object.assign(embyDraft, {
-      name: "",
-      emby_url: "",
-      api_key: "",
-      proxy_port: "",
-      direct_strm_clients: "",
-    });
+    Object.assign(embyDraft, emptyEmbyDraft());
   }
 }
 
 async function setEmbyEnabled(enabled: boolean) {
   if (enabled && embyConfigs.value.length === 0) {
-    toast.error("请先添加 Emby 配置");
+    toast.error("请先添加 Emby/Jellyfin 配置");
     embyOpen.value = true;
     return;
   }
   await persistEmby(
     updatesFromConfigs(embyConfigs.value),
-    enabled ? "Emby 反代已启用" : "Emby 反代已停用",
+    enabled ? "Emby/Jellyfin 反代已启用" : "Emby/Jellyfin 反代已停用",
     enabled,
   );
 }
@@ -270,6 +258,12 @@ const fnosSaving = ref(false);
 const fnosTesting = ref(false);
 const fnosProxyURL = ref("");
 const fnosLastError = ref("");
+const fnosManagementOpen = ref(false);
+const fnosManagementSaving = ref(false);
+const fnosManagementTesting = ref(false);
+const fnosManagementReady = ref(false);
+const fnosPasswordMask = "********";
+const fnosManagement = reactive({ username: "", password: "" });
 const fnosForm = reactive<Record<string, string>>({
   name: "飞牛影视",
   fnos_url: "",
@@ -288,11 +282,16 @@ function applyFnos(config: {
   proxy_url?: string;
   running?: boolean;
   last_error?: string;
+  admin_username?: string;
+  management_ready?: boolean;
 }) {
   fnosEnabled.value = Boolean(config.enabled);
   fnosRunning.value = Boolean(config.running);
   fnosProxyURL.value = config.proxy_url || "";
   fnosLastError.value = config.last_error || "";
+  fnosManagementReady.value = Boolean(config.management_ready);
+  fnosManagement.username = config.admin_username || "";
+  fnosManagement.password = fnosManagementReady.value ? fnosPasswordMask : "";
   Object.assign(fnosForm, {
     name: config.name || "飞牛影视",
     fnos_url: config.fnos_url || "",
@@ -300,6 +299,38 @@ function applyFnos(config: {
     proxy_port: config.proxy_port || "",
     direct_strm_clients: config.direct_strm_clients || "",
   });
+}
+
+async function testManagement() {
+  fnosManagementTesting.value = true;
+  try {
+    await testFnosManagement({
+      username: fnosManagement.username,
+      password: fnosManagement.password === fnosPasswordMask ? "" : fnosManagement.password,
+    });
+    toast.success("飞牛影视管理权限验证成功");
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "飞牛影视管理员登录失败"));
+  } finally {
+    fnosManagementTesting.value = false;
+  }
+}
+
+async function saveManagement() {
+  fnosManagementSaving.value = true;
+  try {
+    const saved = await saveFnosManagement({
+      username: fnosManagement.username,
+      password: fnosManagement.password === fnosPasswordMask ? "" : fnosManagement.password,
+    });
+    applyFnos(saved);
+    fnosManagementOpen.value = false;
+    toast.success(saved.management_ready ? "飞牛影视管理权限已保存" : "飞牛影视管理权限已清除");
+  } catch (error) {
+    toast.error(getApiErrorMessage(error, "保存飞牛影视管理权限失败"));
+  } finally {
+    fnosManagementSaving.value = false;
+  }
 }
 
 const fnosItems = computed<ProxyWorkspaceItem[]>(() => [
@@ -335,14 +366,14 @@ const fnosFields: ProxyField[] = [
     inputmode: "numeric",
     placeholder: "例如 18997",
     helpTitle: "反代端口说明",
-    helpBody: "反代用的端口，随便选一个没被占用的数字就行，别和 Emby 反代用同一个。<br>留空则不启动反代。",
+    helpBody: "反代用的端口，随便选一个没被占用的数字就行，别和 Emby/Jellyfin 反代用同一个。<br>留空则不启动反代。",
   },
   {
     key: "direct_strm_clients",
     label: "STRM 直读客户端",
     placeholder: "Infuse;XXXPlay",
     helpTitle: "STRM 直读客户端说明",
-    helpBody: "部分播放器（如 Infuse）不支持由 LitePan 代取下载地址，需要自己读取 STRM 中的地址。<br>填写这些播放器的客户端关键字，多个用分号隔开，例如 <code>Infuse;XXXPlay</code>；未匹配的播放器仍由 LitePan 代取地址。<br>外网播放时，请确保 STRM 的 URL 基础地址可从外网访问。",
+    helpBody: "目前已知只有 Infuse 不支持由 LitePan 代取下载地址，需要自己读取 STRM 中的地址。<br>填写这些播放器的客户端关键字，多个用分号隔开，例如 <code>Infuse;XXXPlay</code>；未匹配的播放器仍由 LitePan 代取地址，填错了反而播不了。<br>外网播放时，请确保 STRM 的 URL 基础地址可从外网访问。",
   },
 ];
 
@@ -443,42 +474,59 @@ onMounted(async () => {
 
 <template>
   <div class="proxy-enhancement-cards">
-    <article v-show="matches('Emby 反代')" class="tool-card" :class="embyEnabled ? 'is-enabled' : 'is-disabled'">
-      <span class="tool-card__bar" :class="embyEnabled ? 'is-enabled' : 'is-disabled'" />
-      <div class="tool-card__head">
-        <img class="tool-card__logo" src="/logos/emby.png" alt="Emby" />
-        <div class="tool-card__meta"><h3 class="tool-card__name">Emby 反代</h3><p class="tool-card__driver">STRM 直连 · 多 Emby 服务</p></div>
+    <ToolCard
+      v-show="matches('Emby/Jellyfin 反代')"
+      :enabled="embyEnabled"
+      name="Emby/Jellyfin 反代"
+      driver="STRM 直连 · 多媒体服务"
+      logo-src="/logos/emby.png"
+      logo-fit="contain"
+      logo-alt="Emby/Jellyfin"
+      :stat-value="embyConfigs.length"
+      :stat-label="`个配置 · ${embyRunning} 个运行`"
+    >
+      <template #toggle>
         <button class="check-toggle" type="button" :class="{ on: embyEnabled }" :disabled="embySaving" title="启用 / 停用" @click="setEmbyEnabled(!embyEnabled)"><svg viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
-      </div>
-      <p class="tool-card__desc">将 Emby 的 STRM 播放请求转换为网盘 302 直链，避免媒体流量经过 Emby 服务器中转。</p>
-      <div class="tool-card__row"><div class="tool-card__stat"><span class="tool-card__num">{{ embyConfigs.length }}</span><span class="tool-card__label">个配置 · {{ embyRunning }} 个运行</span></div><AppButton size="sm" variant="secondary" @click="openEmby">配置反代</AppButton></div>
-    </article>
+      </template>
+      将 Emby/Jellyfin 的 STRM 播放请求转换为网盘 302 直链，避免媒体流量经过媒体服务器中转。
+      <template #actions>
+        <AppButton size="sm" variant="secondary" @click="openEmby">配置反代</AppButton>
+      </template>
+    </ToolCard>
 
-    <article v-show="matches('飞牛影视反代')" class="tool-card" :class="fnosEnabled ? 'is-enabled' : 'is-disabled'">
-      <span class="tool-card__bar" :class="fnosEnabled ? 'is-enabled' : 'is-disabled'" />
-      <div class="tool-card__head">
-        <img class="tool-card__logo" src="/logos/fnmovie.png" alt="飞牛影视" />
-        <div class="tool-card__meta"><h3 class="tool-card__name">飞牛影视反代</h3><p class="tool-card__driver">STRM 直连 · 飞牛路径转换</p></div>
+    <ToolCard
+      v-show="matches('飞牛影视反代')"
+      :enabled="fnosEnabled"
+      name="飞牛影视反代"
+      driver="STRM 直连 · 飞牛路径转换"
+      logo-src="/logos/fnmovie.png"
+      logo-fit="contain"
+      logo-alt="飞牛影视"
+      :stat-value="fnosRunning ? '运行中' : fnosEnabled ? '待监听' : '未启用'"
+    >
+      <template #toggle>
         <button class="check-toggle" type="button" :class="{ on: fnosEnabled }" :disabled="fnosSaving" title="启用 / 停用" @click="setFnosEnabled(!fnosEnabled)"><svg viewBox="0 0 16 16"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg></button>
-      </div>
-      <p class="tool-card__desc">解决Vidhub、Senplayer、爆米花等第三方播放器添加飞牛影视源后，无法播放STRM的问题。</p>
-      <div class="tool-card__row"><div class="tool-card__stat"><span class="tool-card__num">{{ fnosRunning ? '运行中' : fnosEnabled ? '待监听' : '未启用' }}</span></div><AppButton size="sm" variant="secondary" @click="fnosOpen = true">配置反代</AppButton></div>
-    </article>
+      </template>
+      解决Vidhub、Senplayer、爆米花等第三方播放器添加飞牛影视源后，无法播放STRM的问题。
+      <template #actions>
+        <AppButton size="sm" variant="secondary" @click="fnosOpen = true">配置反代</AppButton>
+      </template>
+    </ToolCard>
 
     <ProxyWorkspace
       v-model="embyDraft"
       :open="embyOpen"
-      title="Emby 反代配置"
-      caption="EMBY 配置"
-      icon="🎬"
-      subtitle="STRM 直连 · 多 Emby 服务"
+      title="Emby/Jellyfin 反代配置"
+      caption=""
+      icon="hand-play"
+      subtitle="STRM 直连 · 多媒体服务"
       :items="embyItems"
       :selected-id="embySelectedID"
       :fields="embyFields"
       :entry-url="embyEntryURL"
       :entry-running="embyEntryRunning"
       entry-help-title="反代入口说明"
-      entry-help-body="在播放器里添加 Emby 服务器时，填这个地址。<br>注意不是上面的 Emby 地址，别填混了。"
+      entry-help-body="在播放器里添加 Emby 或 Jellyfin 服务器时，填这个地址。<br>注意不是上面的媒体服务器地址，别填混了。"
       :show-refresh="true"
       :refreshing="embyRefreshing"
       :testing="embyTesting"
@@ -499,8 +547,8 @@ onMounted(async () => {
       v-model="fnosForm"
       :open="fnosOpen"
       title="飞牛影视反代配置"
-      caption="飞牛影视配置"
-      icon="📺"
+      caption=""
+      icon="hand-monitor"
       subtitle="STRM 直连 · 飞牛路径转换"
       :items="fnosItems"
       selected-id="fnos"
@@ -518,7 +566,27 @@ onMounted(async () => {
       @copy="copyEndpoint(fnosProxyURL, fnosForm.proxy_port, fnosRunning)"
       @save="saveFnos"
       @cancel="fnosOpen = false"
-    />
+    >
+      <template #footer-actions>
+        <AppButton variant="secondary" @click="fnosManagementOpen = true">
+          {{ fnosManagementReady ? "管理权限已配置" : "配置管理权限" }}
+        </AppButton>
+      </template>
+    </ProxyWorkspace>
+
+    <AppModal :open="fnosManagementOpen" size="sm" title="飞牛影视管理权限" @close="fnosManagementOpen = false">
+      <div class="management-form">
+        <p>仅用于自动联动中的媒体库扫描和元数据刷新；飞牛反代播放本身不需要管理员账号。不使用这些动作可以留空。</p>
+        <label>管理员账号</label>
+        <input v-model.trim="fnosManagement.username" class="form-input" autocomplete="username" placeholder="飞牛影视管理员账号">
+        <label>管理员密码</label>
+        <input v-model="fnosManagement.password" class="form-input" type="password" autocomplete="new-password" placeholder="飞牛影视管理员密码" @focus="fnosManagement.password === fnosPasswordMask && (fnosManagement.password = '')">
+      </div>
+      <template #footer>
+        <AppButton variant="secondary" :disabled="fnosManagementTesting" @click="testManagement">{{ fnosManagementTesting ? "测试中…" : "测试登录" }}</AppButton>
+        <AppButton variant="primary" :disabled="fnosManagementSaving" @click="saveManagement">{{ fnosManagementSaving ? "保存中…" : "保存" }}</AppButton>
+      </template>
+    </AppModal>
   </div>
 </template>
 
@@ -526,151 +594,19 @@ onMounted(async () => {
 .proxy-enhancement-cards {
   display: contents;
 }
-
-.tool-card {
-  position: relative;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
+.management-form { display: grid; gap: 10px; }
+.management-form p { margin: 0 0 4px; color: var(--text-muted); line-height: 1.65; font-size: 13px; }
+.management-form label { font-size: 13px; font-weight: 650; color: var(--text); }
+.management-form .form-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 40px;
+  padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
-  padding: 14px;
-  overflow: hidden;
-  transition: var(--transition);
-}
-
-.tool-card:hover {
-  box-shadow: var(--shadow-card);
-}
-
-.tool-card.is-enabled {
-  border-color: color-mix(in srgb, var(--success) 40%, var(--border));
-}
-
-.tool-card__bar {
-  position: absolute;
-  inset: 0 0 0 auto;
-  width: 4px;
-}
-
-.tool-card__bar.is-enabled {
-  background: linear-gradient(180deg, var(--success), #059669);
-}
-
-.tool-card__bar.is-disabled {
-  background: linear-gradient(180deg, #9ca3af, #6b7280);
-}
-
-.tool-card__head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-}
-
-.tool-card__logo {
-  width: 42px;
-  height: 42px;
-  border-radius: var(--radius-md);
-  flex-shrink: 0;
-  object-fit: contain;
-}
-
-.tool-card__meta {
-  flex: 1;
-  min-width: 0;
-}
-
-.tool-card__name {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  line-height: 1.35;
-}
-
-.tool-card__driver {
-  margin: 2px 0 0;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--text-muted);
-}
-
-.tool-card__desc {
-  display: -webkit-box;
-  flex: 0 0 36px;
-  height: 36px;
-  margin: 10px 0 0;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--text-regular);
-}
-
-.tool-card__row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px dashed var(--border);
-}
-
-.tool-card__stat {
-  display: flex;
-  align-items: baseline;
-  min-width: 0;
-  gap: 6px;
-}
-
-.tool-card__num {
-  font-size: 15px;
-  font-weight: 700;
+  border-radius: var(--radius-control);
+  background: var(--surface);
   color: var(--text);
+  outline: none;
 }
-
-.tool-card__label {
-  font-size: 12px;
-  white-space: nowrap;
-  color: var(--text-muted);
-}
-
-.check-toggle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 0;
-  padding: 0;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  background: var(--border);
-  color: var(--text-muted);
-}
-
-.check-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
-.check-toggle.on {
-  background: var(--success);
-  color: #fff;
-  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.16);
-}
-
-.check-toggle:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+.management-form .form-input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 </style>

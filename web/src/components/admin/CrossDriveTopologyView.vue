@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 /**
  * 跨盘秒传 · 秒传航线图（卡片节点版）
@@ -284,7 +285,7 @@ function markLogoFailed(k: string) {
       </div>
 
       <div v-if="hovered" class="air-tip" :style="tipStyle(hovered)">
-        <i class="fas fa-plane-departure"></i>{{ panOf(hovered.f).name }} → {{ panOf(hovered.t).name
+        <SvgIcon name="plane-departure" size="1em" />{{ panOf(hovered.f).name }} → {{ panOf(hovered.t).name
         }}<span>{{ hovered.route.method_label }}</span>
       </div>
     </div>
@@ -422,7 +423,7 @@ function markLogoFailed(k: string) {
   width: 168px;
   height: 44px;
   padding: 0 9px;
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   background: rgba(16, 28, 54, 0.6);
   border: 1px solid rgba(140, 170, 255, 0.22);
@@ -480,7 +481,7 @@ function markLogoFailed(k: string) {
   width: 22px;
   height: 22px;
   object-fit: contain;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
 }
 .ac-fb {
   border-radius: 50%;
@@ -513,7 +514,7 @@ function markLogoFailed(k: string) {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: rgba(13, 27, 51, 0.96);
   border: 1px solid rgba(140, 170, 255, 0.4);
   color: #e8eeff;
@@ -524,7 +525,7 @@ function markLogoFailed(k: string) {
   pointer-events: none;
   z-index: 6;
 }
-.air-tip i {
+.air-tip i, .air-tip .lp-svg-icon {
   color: #8fb0ff;
 }
 .air-tip span {

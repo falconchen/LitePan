@@ -18,7 +18,7 @@ import SettingsCard from "@/components/admin/SettingsCard.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
 import SettingsRow from "@/components/admin/SettingsRow.vue";
 import { confirm } from "@/composables/useConfirm";
-import { bindSettingsPanelExpose, useSettingsForm } from "@/composables/useSettingsForm";
+import { bindSettingsPanelExpose, useSettingsForm, useSettingsSave } from "@/composables/useSettingsForm";
 import { useSettingsLoad } from "@/composables/useSettingsLoad";
 import { toast } from "@/composables/useToast";
 import { parseSettingNumber } from "@/utils/settingsDirty";
@@ -28,6 +28,7 @@ const STRM_SETTINGS_ACCENT = "#7c3aed";
 const MINUTES_PER_HOUR = 60;
 const DEFAULT_SCAN_INTERVAL_MINUTES = 6 * MINUTES_PER_HOUR;
 const metaTmdbTipOpen = ref(false);
+const emit = defineEmits<{ updated: [settings: StrmSettings]; loading: [value: boolean] }>();
 
 type StrmSettingsForm = Pick<
   StrmSettings,
@@ -46,7 +47,7 @@ type StrmSettingsForm = Pick<
 >;
 
 const { loading, loaded, runLoad } = useSettingsLoad(false);
-const saving = ref(false);
+const { saving, runSave } = useSettingsSave();
 const replacingBaseURL = ref(false);
 
 const numericSettingKeys = new Set<keyof StrmSettingsForm>([
@@ -108,6 +109,7 @@ function defaultScanIntervalHours(): number {
 }
 
 function applySettings(data: Awaited<ReturnType<typeof fetchStrmSettings>>) {
+  emit("updated", data);
   applyBaseline({
     base_url: data.base_url ?? "",
     signature_enabled: !!data.signature_enabled,
@@ -125,9 +127,11 @@ function applySettings(data: Awaited<ReturnType<typeof fetchStrmSettings>>) {
 }
 
 async function loadSettings(options?: { silent?: boolean }) {
+  emit("loading", true);
   await runLoad(async () => {
     applySettings(await fetchStrmSettings());
   }, "加载 STRM 设置失败", options);
+  emit("loading", false);
 }
 
 async function saveSettings() {
@@ -143,8 +147,7 @@ async function saveSettings() {
       return;
     }
   }
-  saving.value = true;
-  try {
+  await runSave(async () => {
     const data = await saveStrmSettings({
       base_url: settings.base_url,
       signature_enabled: settings.signature_enabled,
@@ -160,12 +163,7 @@ async function saveSettings() {
       metadata_sync_mode: settings.metadata_sync_mode,
     });
     applySettings(data);
-    toast.success("STRM 设置已保存");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存设置失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "STRM 设置已保存", errorMessage: "保存设置失败" });
 }
 
 async function handleReplaceBaseURL() {

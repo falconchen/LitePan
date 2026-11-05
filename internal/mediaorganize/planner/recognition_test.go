@@ -3,6 +3,7 @@ package planner_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,10 +13,14 @@ import (
 )
 
 type recognitionStub struct {
-	calls  int
-	req    recognition.BatchRequest
-	err    error
-	result func(recognition.BatchRequest) recognition.BatchResult
+	calls         int
+	req           recognition.BatchRequest
+	err           error
+	result        func(recognition.BatchRequest) recognition.BatchResult
+	episodeCalls  int
+	episodeReq    recognition.EpisodeRequest
+	episodeReqs   []recognition.EpisodeRequest
+	episodeResult func(recognition.EpisodeRequest) []recognition.FileResult
 }
 
 func (*recognitionStub) Available() bool { return true }
@@ -45,6 +50,16 @@ func (s *recognitionStub) Enhance(_ context.Context, req recognition.BatchReques
 		})
 	}
 	return recognition.BatchResult{Items: items}, nil
+}
+
+func (s *recognitionStub) ResolveEpisodes(_ context.Context, req recognition.EpisodeRequest) ([]recognition.FileResult, error) {
+	s.episodeCalls++
+	s.episodeReq = req
+	s.episodeReqs = append(s.episodeReqs, req)
+	if s.episodeResult != nil {
+		return s.episodeResult(req), nil
+	}
+	return nil, nil
 }
 
 func TestPlannerUsesAIWhenPollutedTitlesMissTMDB(t *testing.T) {
@@ -109,6 +124,151 @@ func TestPlannerUsesAIWhenPollutedTitlesMissTMDB(t *testing.T) {
 		if !found {
 			t.Fatalf("AI 清理标题后未命中 TMDB %s: actions=%+v skipped=%+v", id, plan.Actions, plan.Skipped)
 		}
+	}
+}
+
+func TestPlannerKeepsBuiltInEpisodesAfterAIIdentifiesLongSeries(t *testing.T) {
+	files := make([]domain.FileItem, 0, 100)
+	for episode := 1; episode <= 100; episode++ {
+		files = append(files, domain.FileItem{
+			ID:   fmt.Sprintf("ep%03d", episode),
+			Name: fmt.Sprintf("%03d.mp4", episode),
+			Size: 1024,
+		})
+	}
+	fs := &mockFS{dirs: map[string][]domain.FileItem{
+		"root": {{ID: "show", Name: "藏丨锋乱码合集zzzz", IsDir: true}},
+		"show": files,
+	}}
+	year := 2026
+	season := 1
+	enhancer := &recognitionStub{result: func(req recognition.BatchRequest) recognition.BatchResult {
+		return recognition.BatchResult{Items: []recognition.WorkResult{{
+			WorkID: req.Works[0].WorkID, Recognized: true, Title: "藏锋", Year: &year, MediaType: "tv", Season: &season,
+		}}}
+	}}
+	tmdb := &mockTMDB{searchFn: func(query string, _ *int) []map[string]any {
+		if strings.TrimSpace(query) == "藏锋" {
+			return []map[string]any{{"id": 280133, "name": "藏锋", "first_air_date": "2026-01-01"}}
+		}
+		return nil
+	}}
+	p := newTestPlanner(fs, tmdb, "root")
+	p.SetRecognitionEnhancer(enhancer)
+	plan, err := p.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enhancer.calls != 1 {
+		t.Fatalf("复杂作品名应只进行一次作品识别: calls=%d", enhancer.calls)
+	}
+	if enhancer.episodeCalls != 0 {
+		t.Fatalf("内置规则已识别的 100 集不应再发给 AI: episode_calls=%d request=%+v", enhancer.episodeCalls, enhancer.episodeReq)
+	}
+	foundEpisode100 := false
+	for _, action := range plan.Actions {
+		if action.SourceID == "ep100" && strings.Contains(action.TargetName, "S01E100") {
+			foundEpisode100 = true
+			break
+		}
+	}
+	if !foundEpisode100 {
+		t.Fatalf("AI 识别作品后应继续使用内置集数整理: actions=%+v skipped=%+v", plan.Actions, plan.Skipped)
+	}
+}
+
+func TestPlannerKeepsExplicitSeasonWhenAIReportsDifferentSeason(t *testing.T) {
+	fs := &mockFS{dirs: map[string][]domain.FileItem{
+		"root": {{ID: "show", Name: "Desperate Housewives 合集", IsDir: true}},
+		"show": {{
+			ID: "ep817", Name: "Desperate.Housewives.S08E17.Women.and.Death.1080p.WEB-DL.x265.10bit.AAC.5.1-RCVR.mkv", Size: 1024,
+		}},
+	}}
+	year := 2004
+	wrongSeason := 1
+	enhancer := &recognitionStub{result: func(req recognition.BatchRequest) recognition.BatchResult {
+		return recognition.BatchResult{Items: []recognition.WorkResult{{
+			WorkID: req.Works[0].WorkID, Recognized: true, Title: "绝望主妇", Year: &year, MediaType: "tv", Season: &wrongSeason,
+		}}}
+	}}
+	tmdb := &mockTMDB{searchFn: func(query string, _ *int) []map[string]any {
+		if strings.TrimSpace(query) == "绝望主妇" {
+			return []map[string]any{{"id": 1408, "name": "绝望主妇", "first_air_date": "2004-10-03"}}
+		}
+		return nil
+	}}
+	p := newTestPlanner(fs, tmdb, "root")
+	p.SetRecognitionEnhancer(enhancer)
+	plan, err := p.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, action := range plan.Actions {
+		if action.SourceID == "ep817" {
+			if !strings.Contains(action.TargetName, "S08E17") {
+				t.Fatalf("AI 不得将文件名明确的 S08E17 覆盖为其他季: %+v", action)
+			}
+			return
+		}
+	}
+	t.Fatalf("未生成目标文件的整理动作: actions=%+v skipped=%+v", plan.Actions, plan.Skipped)
+}
+
+func TestPlannerOnlyAsksAIForUnparsedEpisodes(t *testing.T) {
+	fs := &mockFS{dirs: map[string][]domain.FileItem{
+		"root": {{ID: "show", Name: "混乱剧名合集", IsDir: true}},
+		"show": {
+			{ID: "ep01", Name: "show.S01E01.mkv", Size: 1024},
+			{ID: "ep02", Name: "show.final-part.mkv", Size: 1024},
+		},
+	}}
+	year := 2026
+	season := 1
+	episode2 := 2
+	enhancer := &recognitionStub{
+		result: func(req recognition.BatchRequest) recognition.BatchResult {
+			items := make([]recognition.WorkResult, 0, len(req.Works))
+			for _, work := range req.Works {
+				items = append(items, recognition.WorkResult{
+					WorkID: work.WorkID, Recognized: true, Title: "测试剧", Year: &year, MediaType: "tv", Season: &season,
+				})
+			}
+			return recognition.BatchResult{Items: items}
+		},
+		episodeResult: func(req recognition.EpisodeRequest) []recognition.FileResult {
+			return []recognition.FileResult{{SourceID: req.Files[0].SourceID, Episode: &episode2}}
+		},
+	}
+	tmdb := &mockTMDB{searchFn: func(query string, _ *int) []map[string]any {
+		if strings.TrimSpace(query) == "测试剧" {
+			return []map[string]any{{"id": 123456, "name": "测试剧", "first_air_date": "2026-01-01"}}
+		}
+		return nil
+	}}
+	p := newTestPlanner(fs, tmdb, "root")
+	p.SetRecognitionEnhancer(enhancer)
+	plan, err := p.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestedNames := make([]string, 0)
+	for _, req := range enhancer.episodeReqs {
+		for _, file := range req.Files {
+			requestedNames = append(requestedNames, file.Name)
+		}
+	}
+	if enhancer.episodeCalls == 0 || len(requestedNames) != 1 || requestedNames[0] != "show.final-part.mkv" {
+		t.Fatalf("应只将内置规则无法解析的文件交给 AI: calls=%d files=%v", enhancer.episodeCalls, requestedNames)
+	}
+	foundEpisode2 := false
+	for _, action := range plan.Actions {
+		if action.SourceID == "ep02" && strings.Contains(action.TargetName, "S01E02") {
+			foundEpisode2 = true
+			break
+		}
+	}
+	if !foundEpisode2 {
+		t.Fatalf("AI 补判的集数未回到原有整理规则: actions=%+v skipped=%+v", plan.Actions, plan.Skipped)
 	}
 }
 

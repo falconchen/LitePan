@@ -355,7 +355,7 @@ function confirm() {
 .twp-modal {
   background: var(--surface);
   color: var(--text);
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
   width: 420px;
   overflow: hidden;
@@ -414,7 +414,7 @@ function confirm() {
   padding: 6px 18px;
   border: 0;
   background: transparent;
-  border-radius: 18px;
+  border-radius: var(--radius-xl);
   color: var(--text-muted);
   font-size: 13px;
   font-weight: 600;
@@ -455,7 +455,7 @@ function confirm() {
   height: 188px;
   justify-content: center;
   background: var(--surface-sunken);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   padding: 0 24px;
   text-align: center;
 }
@@ -475,7 +475,7 @@ function confirm() {
 .twp-manual-lock {
   max-width: 280px;
   padding: 8px 12px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: color-mix(in srgb, var(--warning) 14%, var(--surface));
   color: var(--warning);
   font-size: 12px;
@@ -510,7 +510,7 @@ function confirm() {
   display: flex;
   height: 188px;
   background: var(--surface-sunken);
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   overflow: hidden;
 }
 
@@ -656,7 +656,7 @@ function confirm() {
 .twp-btn {
   flex: 1;
   height: 42px;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   font-size: 14px;
   font-weight: 600;
   font-family: inherit;

@@ -44,7 +44,7 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 	targetName = resolvedName
 	targetPath := d.childPath(parentID, targetName)
 
-	c, err := d.ensureClient()
+	c, err := d.ensureUploadClient()
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,6 @@ func (d *Driver) UploadLocalFile(ctx context.Context, req driver.LocalUploadRequ
 		Message:  fmt.Sprintf("文件 '%s' 上传成功", targetName),
 	}, nil
 }
-
 
 func (d *Driver) prepareUploadTarget(ctx context.Context, parentID, name, policy string) (string, bool, error) {
 	if policy == "overwrite" {

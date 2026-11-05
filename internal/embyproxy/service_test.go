@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"litepan/internal/playback"
-	"litepan/internal/proxybase"
 	"litepan/internal/settings"
 	"litepan/internal/store"
 	"litepan/internal/strm"
@@ -26,6 +25,29 @@ func TestUpdateRequestAcceptsNumericPort(t *testing.T) {
 	}
 	if in.Port.String() != "18097" {
 		t.Fatalf("端口=%q", in.Port.String())
+	}
+}
+
+func TestServeLitePanPlaybackResolvesPathReference(t *testing.T) {
+	var got playback.Request
+	svc := &Service{
+		resolvePath: func(_ context.Context, accountID int64, rootID, relativePath string) (string, error) {
+			if accountID != 12 || rootID != "root-id" || relativePath != "电影/测试.mkv" {
+				t.Fatalf("路径参数不符: account=%d root=%q path=%q", accountID, rootID, relativePath)
+			}
+			return "file-id", nil
+		},
+		servePlayback: func(_ http.ResponseWriter, _ *http.Request, req playback.Request, _ playback.Intent) error {
+			got = req
+			return nil
+		},
+	}
+	playURL := strm.BuildPathPlayURL("http://litepan.test", 12, "root-id", "电影/测试.mkv", "测试.mkv", "token", false, nil)
+	if !svc.serveLitePanPlayback(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), playURL) {
+		t.Fatal("路径型 STRM 未被 Emby 反代识别")
+	}
+	if got.AccountID != 12 || got.FileID != "file-id" {
+		t.Fatalf("播放参数=%#v", got)
 	}
 }
 
@@ -257,39 +279,6 @@ func TestRedirectSTRMStreamAcceptsLitePanURLWithSpaces(t *testing.T) {
 	}
 }
 
-func TestParseLitePanSTRMURLFilenameRegressionCases(t *testing.T) {
-	cases := []struct {
-		name     string
-		fileName string
-	}{
-		{name: "中文空格括号", fileName: "10间敢死队 (2026) [2160p].mkv"},
-		{name: "英文加号百分号", fileName: "Movie.Name.2024.2160p.HDR10+ 100%.mkv"},
-		{name: "波浪线与符号", fileName: "A&B ~ Director's Cut, Final!.mp4"},
-		{name: "全角符号混排", fileName: "全角～波浪＋中文＆英文【特别版】.mkv"},
-		{name: "井号分号等号", fileName: "Episode 01; part=2 #remux!.mkv"},
-	}
-	for i, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fileID := fmt.Sprintf("file-regression-%d", i)
-			playURL := fmt.Sprintf(
-				"http://127.0.0.1:5211/api/strm/play/12/%s/t/token/n/%s",
-				strm.EncodeFileKey(fileID),
-				url.PathEscape(tc.fileName),
-			)
-			accountID, gotFileID, ok := proxybase.ParseLitePanSTRMURL(playURL)
-			if !ok {
-				t.Fatalf("proxybase.ParseLitePanSTRMURL 返回 false，url=%q", playURL)
-			}
-			if accountID != 12 || gotFileID != fileID {
-				t.Fatalf("解析结果错误：account=%d file=%q", accountID, gotFileID)
-			}
-			if gotPath := proxybase.LitePanPath(playURL); strings.Contains(gotPath, " ") {
-				t.Fatalf("编码路径不应出现空格：%q", gotPath)
-			}
-		})
-	}
-}
-
 func TestListLibrariesAndRefreshSpecificLibrary(t *testing.T) {
 	var gotSelectable bool
 	var gotRefreshPath string
@@ -328,6 +317,49 @@ func TestListLibrariesAndRefreshSpecificLibrary(t *testing.T) {
 	}
 	if result.Mode != "library" || result.LibraryID != "lib-2" || result.LibraryName != "剧集" {
 		t.Fatalf("刷新结果异常: %#v", result)
+	}
+}
+
+func TestJellyfinV12AuthAndVirtualFolderFallback(t *testing.T) {
+	var refreshed bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("ApiKey") != "test-key" {
+			http.Error(w, "missing ApiKey", http.StatusUnauthorized)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != `MediaBrowser Token="test-key"` {
+			http.Error(w, "missing MediaBrowser authorization", http.StatusUnauthorized)
+			return
+		}
+		switch {
+		case r.URL.Path == "/Library/SelectableMediaFolders":
+			http.NotFound(w, r)
+		case r.URL.Path == "/Library/VirtualFolders":
+			_ = json.NewEncoder(w).Encode([]map[string]any{{
+				"Name": "Jellyfin 电影", "ItemId": "jf-lib", "CollectionType": "movies",
+			}})
+		case r.URL.Path == "/Items/jf-lib/Refresh" && r.Method == http.MethodPost:
+			refreshed = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	svc := testEmbyProxyService(t, server.URL)
+	libraries, err := svc.ListLibraries(context.Background())
+	if err != nil {
+		t.Fatalf("列出 Jellyfin v12 媒体库: %v", err)
+	}
+	if len(libraries) != 1 || libraries[0].ID != "jf-lib" || libraries[0].Name != "Jellyfin 电影" {
+		t.Fatalf("Jellyfin 媒体库解析错误: %+v", libraries)
+	}
+	if _, err := svc.RefreshLibrary(context.Background(), RefreshRequest{Mode: "library", LibraryID: "jf-lib"}); err != nil {
+		t.Fatalf("刷新 Jellyfin v12 媒体库: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("Jellyfin 媒体库刷新接口未调用")
 	}
 }
 

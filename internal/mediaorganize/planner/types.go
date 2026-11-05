@@ -33,6 +33,11 @@ type Progress struct {
 	AIFailed     int    `json:"ai_failed"`
 	AIChunk      int    `json:"ai_chunk"`
 	AIChunks     int    `json:"ai_chunks"`
+	AIBatchSize  int    `json:"ai_batch_size"`
+	AISplitDepth int    `json:"ai_split_depth"`
+	AIStartedAt  int64  `json:"ai_attempt_started_at"`
+	AITimeout    int    `json:"ai_attempt_timeout_seconds"`
+	AIRetrying   bool   `json:"ai_retrying"`
 }
 
 type TaskConfig struct {

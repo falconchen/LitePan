@@ -285,16 +285,11 @@ func (h *Handler) createLocalUploadTasks(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	batchID := strings.TrimSpace(in.ClientTaskID)
-	batchName := strings.TrimSpace(in.DisplayName)
-	if batchName == "" && len(in.Items) == 1 && in.Items[0].IsDir {
-		batchName = path.Base(strings.Trim(cleanRelativePath(in.Items[0].RelPath), "/"))
-	}
 
 	ctx := context.WithoutCancel(r.Context())
 	go func() {
 		created, err := h.createLocalUploadTasksSync(ctx, m, in.AccountID, in.TargetPath,
-			strings.TrimSpace(in.TargetDisplay), batchID, batchName, conflict,
-			sources)
+			strings.TrimSpace(in.TargetDisplay), batchID, conflict, sources)
 		if err == nil {
 			return
 		}
@@ -312,7 +307,7 @@ func (h *Handler) createLocalUploadTasksSync(
 	ctx context.Context,
 	m localUploadMapping,
 	accountID int64,
-	targetRoot, targetDisplay, clientTaskID, displayName, conflict string,
+	targetRoot, targetDisplay, clientTaskID, conflict string,
 	sources []localUploadSource,
 ) ([]*upload.Task, error) {
 	const batchSize = 100
@@ -332,6 +327,10 @@ func (h *Handler) createLocalUploadTasksSync(
 	accountName, driverType := "", ""
 	if h.accountSvc != nil {
 		accountName, driverType, _ = h.accountSvc.LookupUploadAccount(ctx, accountID)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(m.Path)
+	if err != nil {
+		return nil, fmt.Errorf("检查服务器上传映射目录失败：%w", err)
 	}
 	flush := func() error {
 		if len(batch) == 0 {
@@ -379,13 +378,13 @@ func (h *Handler) createLocalUploadTasksSync(
 			targetParent = parent
 			targetDirs[s.relDir] = targetParent
 		}
-		localPath, err := resolveLocalUploadSource(s.abs, m.Path)
+		localPath, err := resolveLocalUploadSourceUnderRoot(s.abs, resolvedRoot)
 		if err != nil {
 			h.logError("检查服务器上传文件失败", "path", s.abs, "err", err.Error())
 			recordFailure(fmt.Errorf("检查文件 %s 失败：%w", filepath.Base(s.abs), err))
 			continue
 		}
-		info, err := statLocalFile(localPath)
+		info, err := os.Stat(localPath)
 		if err != nil {
 			h.logError("读取本地文件失败", "path", localPath, "err", err.Error())
 			recordFailure(fmt.Errorf("读取文件 %s 失败：%w", filepath.Base(s.abs), err))
@@ -495,16 +494,7 @@ func buildLocalUploadSources(abs, rel string, isDir bool) ([]localUploadSource, 
 	return sources, nil
 }
 
-func statLocalFile(abs string) (fs.FileInfo, error) {
-	return os.Stat(abs)
-}
-
-// 解析符号链接后检查边界。
-func resolveLocalUploadSource(abs, root string) (string, error) {
-	resolvedRoot, err := filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", err
-	}
+func resolveLocalUploadSourceUnderRoot(abs, resolvedRoot string) (string, error) {
 	resolvedPath, err := filepath.EvalSymlinks(abs)
 	if err != nil {
 		return "", err

@@ -33,8 +33,10 @@ export interface SettingsPayload {
   items: SettingItem[];
 }
 
-export function fetchSettings() {
-  return http.get<SettingsPayload>("/admin/settings");
+export function fetchSettings(options?: { includeHidden?: boolean }) {
+  // includeHidden：连带取回 Hidden 键（界面偏好等），供前端读回用户习惯。
+  const query = options?.includeHidden ? "?include_hidden=1" : "";
+  return http.get<SettingsPayload>(`/admin/settings${query}`);
 }
 
 // 仅提交改动过的键值（字符串形式），后端按类型校验并返回最新快照。

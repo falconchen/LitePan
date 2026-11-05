@@ -16,6 +16,7 @@ import (
 	"litepan/internal/domain"
 	"litepan/internal/driver"
 	"litepan/internal/file"
+	"litepan/internal/mediaorganize/classification"
 	"litepan/internal/mediaorganize/rules"
 	"litepan/internal/mediaorganize/tmdb"
 	"litepan/internal/settings"
@@ -37,8 +38,9 @@ type Service struct {
 	dataDir  string
 	log      *slog.Logger
 
-	planner  PlannerBuilder
-	executor ExecutorApplier
+	planner        PlannerBuilder
+	executor       ExecutorApplier
+	classification classification.RootDirectoryProvider
 
 	mu              sync.Mutex
 	taskLogs        map[string][]LogEntry
@@ -46,16 +48,19 @@ type Service struct {
 	running         map[string]struct{}
 	stopRequests    map[string]struct{}
 	runningAccounts map[string]int64
+	// pendingDelete 记录运行期间被请求删除的任务。
+	pendingDelete map[string]struct{}
 }
 
 type ServiceOptions struct {
-	Repo     domain.MediaOrganizeTaskRepository
-	Files    *file.Service
-	Settings *settings.Service
-	DataDir  string
-	Log      *slog.Logger
-	Planner  PlannerBuilder
-	Executor ExecutorApplier
+	Repo           domain.MediaOrganizeTaskRepository
+	Files          *file.Service
+	Settings       *settings.Service
+	DataDir        string
+	Log            *slog.Logger
+	Planner        PlannerBuilder
+	Executor       ExecutorApplier
+	Classification classification.RootDirectoryProvider
 }
 
 func NewService(opts ServiceOptions) *Service {
@@ -79,11 +84,13 @@ func NewService(opts ServiceOptions) *Service {
 		log:             log,
 		planner:         p,
 		executor:        e,
+		classification:  opts.Classification,
 		taskLogs:        make(map[string][]LogEntry),
 		taskProgress:    make(map[string]map[string]any),
 		running:         make(map[string]struct{}),
 		stopRequests:    make(map[string]struct{}),
 		runningAccounts: make(map[string]int64),
+		pendingDelete:   make(map[string]struct{}),
 	}
 }
 
@@ -167,17 +174,61 @@ func (s *Service) DeleteTask(ctx context.Context, id string) (stopping bool, err
 	if err != nil {
 		return false, err
 	}
-	wasRunning := IsActiveStatus(task.Status) || s.IsRunning(id)
-	if wasRunning {
+	if s.IsRunning(id) {
+		// 先请求停止、再在同一把锁内登记待删除；顺序反了协程收不到停止请求，登记不原子会丢删除请求。
 		s.RequestStop(id)
+		if s.deferDeleteIfRunning(id) {
+			task.Status = domain.MediaOrganizeStatusStopping
+			if uerr := s.repo.Update(ctx, task); uerr != nil {
+				s.log.Warn("标记整理任务停止中失败", "task_id", id, "err", uerr)
+			}
+			return true, nil
+		}
+	}
+	// 无执行协程（含状态残留）：直接删除。
+	s.discardStop(id)
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return false, err
 	}
 	_ = s.deletePlanFile(id)
-	s.discardStop(id)
 	s.clearLogs(id)
-	if err := s.repo.Delete(ctx, id); err != nil {
-		return wasRunning, err
+	return false, nil
+}
+
+// deferDeleteIfRunning 在同一把锁内判断存活并登记待删除，避免竞态丢失删除请求。
+func (s *Service) deferDeleteIfRunning(taskID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.running[taskID]; !ok {
+		return false
 	}
-	return wasRunning, nil
+	if s.pendingDelete == nil {
+		s.pendingDelete = make(map[string]struct{})
+	}
+	s.pendingDelete[taskID] = struct{}{}
+	return true
+}
+
+// finalizePendingDelete 在协程退出后清理待删除的任务数据；重复调用是安全的空操作。
+func (s *Service) finalizePendingDelete(taskID string) bool {
+	s.mu.Lock()
+	_, ok := s.pendingDelete[taskID]
+	delete(s.pendingDelete, taskID)
+	s.mu.Unlock()
+	if !ok {
+		return false
+	}
+	s.discardStop(taskID)
+	_ = s.deletePlanFile(taskID)
+	s.clearLogs(taskID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := s.repo.Delete(ctx, taskID); err != nil {
+		s.log.Warn("整理任务停止后删除失败", "task_id", taskID, "err", err)
+		return true
+	}
+	s.log.Info("整理任务已停止并删除", "task_id", taskID)
+	return true
 }
 
 func (s *Service) PlanTask(ctx context.Context, taskID string) (map[string]any, error) {
@@ -185,9 +236,10 @@ func (s *Service) PlanTask(ctx context.Context, taskID string) (map[string]any, 
 	if err != nil {
 		return nil, err
 	}
-	if s.IsRunning(taskID) {
+	if !s.beginRun(taskID, 0) {
 		return nil, domain.Errorf(domain.CodeValidation, "任务正在执行中")
 	}
+	defer s.finishRun(taskID)
 
 	s.discardStop(taskID)
 	s.clearLogs(taskID)
@@ -195,8 +247,7 @@ func (s *Service) PlanTask(ctx context.Context, taskID string) (map[string]any, 
 	s.appendLog(taskID, "[MediaOrganize] 生成计划开始")
 
 	settingsDict := SettingsDict(s.settings)
-	delayMS := intFromAny(settingsDict["api_request_interval_ms"], 300)
-	ctx = driver.WithExtraAPIDelay(ctx, delayMS)
+	ctx = s.withAPIDelay(ctx)
 
 	task.Status = domain.MediaOrganizeStatusPlanning
 	_ = s.repo.Update(ctx, task)
@@ -231,18 +282,7 @@ func (s *Service) PlanTask(ctx context.Context, taskID string) (map[string]any, 
 }
 
 func (s *Service) ApplyTask(ctx context.Context, taskID string) (map[string]any, error) {
-	task, err := s.requireTask(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	if s.IsRunning(taskID) {
-		return nil, domain.Errorf(domain.CodeValidation, "任务正在执行中")
-	}
-	cfg, err := s.loadTaskConfig(task)
-	if err != nil {
-		return nil, err
-	}
-	accountID, err := s.resolveAccountID(task, cfg)
+	task, cfg, accountID, err := s.prepareRun(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -262,19 +302,15 @@ func (s *Service) ApplyTask(ctx context.Context, taskID string) (map[string]any,
 	return map[string]any{"task_id": taskID, "submitted": true}, nil
 }
 
+// withAPIDelay 按全局 API 间隔设置给上下文叠加请求延迟。
+func (s *Service) withAPIDelay(ctx context.Context) context.Context {
+	settingsDict := SettingsDict(s.settings)
+	delayMS := intFromAny(settingsDict["api_request_interval_ms"], 300)
+	return driver.WithExtraAPIDelay(ctx, delayMS)
+}
+
 func (s *Service) RunTask(ctx context.Context, taskID string) (map[string]any, error) {
-	task, err := s.requireTask(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	if s.IsRunning(taskID) {
-		return nil, domain.Errorf(domain.CodeValidation, "任务正在执行中")
-	}
-	cfg, err := s.loadTaskConfig(task)
-	if err != nil {
-		return nil, err
-	}
-	accountID, err := s.resolveAccountID(task, cfg)
+	task, cfg, accountID, err := s.prepareRun(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -285,8 +321,7 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (map[string]any, e
 	s.log.Info("整理任务开始执行", "task_id", taskID, "task_name", task.TaskName, "account_id", accountID)
 	s.startRunner(taskID, accountID, func(runCtx context.Context) {
 		settingsDict := SettingsDict(s.settings)
-		delayMS := intFromAny(settingsDict["api_request_interval_ms"], 300)
-		runCtx = driver.WithExtraAPIDelay(runCtx, delayMS)
+		runCtx = s.withAPIDelay(runCtx)
 
 		task.Status = domain.MediaOrganizeStatusPlanning
 		_ = s.repo.Update(runCtx, task)
@@ -313,6 +348,25 @@ func (s *Service) RunTask(ctx context.Context, taskID string) (map[string]any, e
 		s.applyPlanRunner(runCtx, taskID, plan, task, cfg, accountID)
 	})
 	return map[string]any{"task_id": taskID, "submitted": true}, nil
+}
+
+func (s *Service) prepareRun(ctx context.Context, taskID string) (*domain.MediaOrganizeTask, map[string]any, int64, error) {
+	task, err := s.requireTask(ctx, taskID)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if s.IsRunning(taskID) {
+		return nil, nil, 0, domain.Errorf(domain.CodeValidation, "任务正在执行中")
+	}
+	cfg, err := s.loadTaskConfig(task)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	accountID, err := s.resolveAccountID(task, cfg)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	return task, cfg, accountID, nil
 }
 
 func (s *Service) GetPlan(taskID string) (*Plan, error) {
@@ -423,31 +477,25 @@ func (s *Service) DeletePlanActions(taskID string, actionIDs []string) (map[stri
 	if len(wanted) == 0 {
 		return map[string]any{"removed": []string{}, "skipped": []string{}}, nil
 	}
-	removable := make(map[string]struct{})
+	removed := make([]string, 0, len(wanted))
+	removedSet := make(map[string]struct{}, len(wanted))
+	filtered := make([]PlanAction, 0, len(plan.Actions))
 	for _, action := range plan.Actions {
-		if _, ok := wanted[action.ID]; !ok {
+		_, selected := wanted[action.ID]
+		if selected && action.Kind == ActionKindRelocate && action.Status != "done" {
+			removed = append(removed, action.ID)
+			removedSet[action.ID] = struct{}{}
 			continue
 		}
-		if action.Kind == ActionKindRelocate && action.Status != "done" {
-			removable[action.ID] = struct{}{}
-		}
+		filtered = append(filtered, action)
 	}
-	skipped := make([]string, 0)
+	skipped := make([]string, 0, len(wanted))
 	for id := range wanted {
-		if _, ok := removable[id]; !ok {
+		if _, ok := removedSet[id]; !ok {
 			skipped = append(skipped, id)
 		}
 	}
-	removed := make([]string, 0, len(removable))
-	if len(removable) > 0 {
-		filtered := make([]PlanAction, 0, len(plan.Actions))
-		for _, action := range plan.Actions {
-			if _, ok := removable[action.ID]; ok {
-				removed = append(removed, action.ID)
-				continue
-			}
-			filtered = append(filtered, action)
-		}
+	if len(removed) > 0 {
 		plan.Actions = filtered
 		if err := s.savePlan(taskID, plan); err != nil {
 			return nil, err
@@ -595,8 +643,7 @@ func (s *Service) buildPlan(ctx context.Context, taskID string, task *domain.Med
 
 func (s *Service) applyPlanRunner(ctx context.Context, taskID string, plan *Plan, task *domain.MediaOrganizeTask, cfg map[string]any, accountID int64) {
 	settingsDict := SettingsDict(s.settings)
-	delayMS := intFromAny(settingsDict["api_request_interval_ms"], 300)
-	ctx = driver.WithExtraAPIDelay(ctx, delayMS)
+	ctx = s.withAPIDelay(ctx)
 
 	aborted := false
 	task.Status = domain.MediaOrganizeStatusRunning
@@ -614,6 +661,10 @@ func (s *Service) applyPlanRunner(ctx context.Context, taskID string, plan *Plan
 	}
 
 	s.discardStop(taskID)
+	// 运行期间被请求删除：不写统计与完成日志，直接清掉任务数据。
+	if s.finalizePendingDelete(taskID) {
+		return
+	}
 	summary := summarizePlan(plan, aborted)
 	summaryBytes, _ := json.Marshal(summary)
 	task.Status = domain.MediaOrganizeStatusIdle
@@ -631,26 +682,36 @@ func (s *Service) applyPlanRunner(ctx context.Context, taskID string, plan *Plan
 }
 
 func (s *Service) startRunner(taskID string, accountID int64, fn func(context.Context)) {
-	s.mu.Lock()
-	if _, ok := s.running[taskID]; ok {
-		s.mu.Unlock()
+	if !s.beginRun(taskID, accountID) {
 		return
+	}
+
+	go func() {
+		defer s.finishRun(taskID)
+		fn(context.Background())
+	}()
+}
+
+func (s *Service) beginRun(taskID string, accountID int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.running[taskID]; ok {
+		return false
 	}
 	s.running[taskID] = struct{}{}
 	if accountID > 0 {
 		s.runningAccounts[taskID] = accountID
 	}
-	s.mu.Unlock()
+	return true
+}
 
-	go func() {
-		defer func() {
-			s.mu.Lock()
-			delete(s.running, taskID)
-			delete(s.runningAccounts, taskID)
-			s.mu.Unlock()
-		}()
-		fn(context.Background())
-	}()
+func (s *Service) finishRun(taskID string) {
+	s.mu.Lock()
+	delete(s.running, taskID)
+	delete(s.runningAccounts, taskID)
+	s.mu.Unlock()
+	// 提前退出时仍要兑现运行期间的删除请求。
+	s.finalizePendingDelete(taskID)
 }
 
 func (s *Service) requireTask(ctx context.Context, taskID string) (*domain.MediaOrganizeTask, error) {
@@ -795,23 +856,22 @@ func IsActiveStatus(status string) bool {
 	}
 }
 
-var normalSkipMarkers = []string{"已整理", "已是目标名", "已并入", "文件已自动并入", "目录非空"}
-
 func summarizePlan(plan *Plan, aborted bool) map[string]any {
 	if plan == nil {
 		return map[string]any{"stopped": aborted}
 	}
-	relocates := make([]PlanAction, 0)
+	// 规划冲突同时保留动作和诊断记录，统计以动作结果为准。
+	seen := make(map[string]bool)
+	total, renamed, moved, failed := 0, 0, 0, 0
+	skipped, normalSkipped, pending := 0, 0, 0
 	for _, action := range plan.Actions {
-		if action.Kind == ActionKindRelocate {
-			relocates = append(relocates, action)
+		if action.Kind != ActionKindRelocate {
+			continue
 		}
-	}
-	total := len(relocates) + len(plan.Skipped)
-	renamed, moved, failed := 0, 0, 0
-	relocateSkips := 0
-	normalSkipped := 0
-	for _, action := range relocates {
+		total++
+		if action.SourceID != "" {
+			seen[action.SourceID] = true
+		}
 		switch action.Status {
 		case "done":
 			if action.SourceParentID == action.TargetParentID {
@@ -820,23 +880,30 @@ func summarizePlan(plan *Plan, aborted bool) map[string]any {
 				moved++
 			}
 		case "skipped":
-			relocateSkips++
+			skipped++
 			if isNormalSkip(action.Error, action.Reason) {
 				normalSkipped++
 			}
 		case "failed":
 			failed++
+		default:
+			// 未执行的动作单独计数，保证 total 等于各分桶之和。
+			pending++
 		}
 	}
 	for _, item := range plan.Skipped {
+		id := stringFromAny(item["file_id"])
+		if id != "" && seen[id] {
+			continue
+		}
+		if id != "" {
+			seen[id] = true
+		}
+		total++
+		skipped++
 		if isNormalSkip("", stringFromAny(item["reason"])) {
 			normalSkipped++
 		}
-	}
-	skipped := relocateSkips + len(plan.Skipped)
-	abnormalSkipped := skipped - normalSkipped
-	if abnormalSkipped < 0 {
-		abnormalSkipped = 0
 	}
 	return map[string]any{
 		"total":            total,
@@ -844,8 +911,9 @@ func summarizePlan(plan *Plan, aborted bool) map[string]any {
 		"moved":            moved,
 		"skipped":          skipped,
 		"normal_skipped":   normalSkipped,
-		"abnormal_skipped": abnormalSkipped,
+		"abnormal_skipped": skipped - normalSkipped,
 		"failed":           failed,
+		"pending":          pending,
 		"stopped":          aborted,
 	}
 }
@@ -859,9 +927,9 @@ func formatSummaryZh(summary map[string]any) string {
 		return 0
 	}
 	line := fmt.Sprintf(
-		"共 %d 项，成功 %d（重命名 %d / 移动 %d），跳过 %d（无需处理 %d / 需关注 %d），失败 %d",
+		"共 %d 项，成功 %d（重命名 %d / 移动 %d），跳过 %d（无需处理 %d / 需关注 %d），失败 %d，未执行 %d",
 		n("total"), n("renamed")+n("moved"), n("renamed"), n("moved"),
-		n("skipped"), n("normal_skipped"), n("abnormal_skipped"), n("failed"),
+		n("skipped"), n("normal_skipped"), n("abnormal_skipped"), n("failed"), n("pending"),
 	)
 	if stopped, _ := summary["stopped"].(bool); stopped {
 		line += "（已中止）"
@@ -874,21 +942,20 @@ func isNormalSkip(errText, reason string) bool {
 	if text == "" {
 		text = reason
 	}
-	for _, marker := range normalSkipMarkers {
-		if strings.Contains(text, marker) {
-			return true
-		}
-	}
-	return false
+	text = strings.TrimSpace(text)
+	// 限定原因格式，避免冲突文件名含“已整理”等字样时被误判。
+	return text == "已整理" || text == "已是目标名" ||
+		text == "目标已存在同名（未开启覆盖）" || text == "执行期间目标已存在同名" ||
+		strings.HasPrefix(text, "已并入「") ||
+		(strings.HasPrefix(text, "已合并到「") &&
+			(strings.HasSuffix(text, "（同一部作品，文件已自动并入，空目录将清理）") ||
+				strings.HasSuffix(text, "；源目录内文件将自动搬入该目录"))) ||
+		(strings.HasPrefix(text, "作品已在「") && strings.HasSuffix(text, "整理，文件已自动并入")) ||
+		strings.HasPrefix(text, "目录非空（")
 }
 
 func buildProxyURL(settingsDict map[string]any) string {
-	return tmdb.BuildProxyURL(tmdb.ProxyConfig{
-		Enabled:  rules.SettingBool(settingsDict["proxy_enabled"], false),
-		URL:      stringFromAny(settingsDict["proxy_url"]),
-		Username: stringFromAny(settingsDict["proxy_username"]),
-		Password: stringFromAny(settingsDict["proxy_password"]),
-	})
+	return tmdb.BuildProxyURL(proxyConfigFrom(settingsDict, ""))
 }
 
 func stringFromAny(v any) string {

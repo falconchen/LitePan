@@ -302,18 +302,8 @@ func (m *Manager) newTaskStateLocked(p CreateParams) *taskState {
 	if name == "" {
 		name = p.FileName
 	}
-	sourceType := p.SourceType
-	if sourceType == "" {
-		sourceType = SourceTypeManual
-	}
-	phase := p.Phase
-	if phase == "" {
-		if sourceType == SourceTypeCrossTransfer {
-			phase = PhaseDownloading
-		} else {
-			phase = PhaseUploading
-		}
-	}
+	sourceType := taskSourceType(p.SourceType)
+	phase := taskPhase(sourceType, p.Phase)
 	now := time.Now()
 	m.queueOrder++
 	order := m.queueOrder
@@ -322,14 +312,8 @@ func (m *Manager) newTaskStateLocked(p CreateParams) *taskState {
 	if localPath == "" && sourceType == SourceTypeCrossTransfer {
 		localPath = filepath.Join(m.TempDir(), id+filepath.Ext(name))
 	}
-	cleanupLocalMode := p.CleanupLocalMode
+	cleanupLocalMode := taskCleanupMode(sourceType, localPath, p.CleanupLocalMode)
 	cleanupLocalPath := p.CleanupLocalPath
-	if cleanupLocalMode == "" && localPath != "" {
-		switch sourceType {
-		case SourceTypeManual, SourceTypeCrossTransfer:
-			cleanupLocalMode = CleanupLocalFileOnSuccess
-		}
-	}
 	if cleanupLocalPath == "" {
 		cleanupLocalPath = localPath
 	}
@@ -576,8 +560,7 @@ func (m *Manager) RemoveTasksByAccount(ctx context.Context, accountID int64) (in
 	ids := make([]string, 0)
 	for id, st := range m.tasks {
 		usesTarget := st.AccountID == accountID
-		usesSource := st.SourceType == SourceTypeCrossTransfer &&
-			st.SourceAccountID == accountID && st.Phase == PhaseDownloading
+		usesSource := isCrossTransferDownload(st) && st.SourceAccountID == accountID
 		if usesTarget || usesSource {
 			ids = append(ids, id)
 		}
@@ -621,7 +604,7 @@ func (m *Manager) publishOfflineHandoffCompleted(taskID string) {
 				continue
 			}
 			matched++
-			if candidate.Status != StatusSuccess && candidate.Status != StatusSkipped {
+			if !isCompletedUploadStatus(candidate.Status) {
 				m.mu.Unlock()
 				return
 			}

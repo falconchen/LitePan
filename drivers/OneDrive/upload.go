@@ -212,7 +212,7 @@ func (d *Driver) uploadSmallOnce(ctx context.Context, localPath, parentID, fileN
 	req.Header.Set("Content-Length", fmt.Sprintf("%d", size))
 	req.ContentLength = size
 	uploadutil.NotifyProgress(progress, 0, size, "正在上传到 OneDrive（1/1）")
-	resp, data, err := httpx.Execute(d.client, req, httpx.DefaultReadLimit)
+	resp, data, err := httpx.Execute(d.uploadClient, req, httpx.DefaultReadLimit)
 	if err != nil {
 		return graphItem{}, domain.Wrap(domain.CodeDriverError, err)
 	}
@@ -369,7 +369,7 @@ func (d *Driver) putUploadChunk(ctx context.Context, uploadURL string, data []by
 		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(data)))
 		req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, total))
 		req.Header.Set("Content-Type", "application/octet-stream")
-		resp, body, err := httpx.Execute(d.client, req, httpx.DefaultReadLimit)
+		resp, body, err := httpx.Execute(d.uploadClient, req, httpx.DefaultReadLimit)
 		if err != nil {
 			if attempt+1 == uploadAttempts {
 				return graphItem{}, domain.Wrap(domain.CodeDriverError, err)

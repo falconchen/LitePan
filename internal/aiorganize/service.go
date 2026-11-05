@@ -19,11 +19,14 @@ import (
 )
 
 const (
-	promptVersion = "v1"
-	cacheTTL      = 24 * time.Hour
-	maxCacheItems = 256
-	maxChunkWorks = 20
-	maxChunkBytes = 28 * 1024
+	promptVersion         = "v3"
+	cacheTTL              = 24 * time.Hour
+	maxCacheItems         = 256
+	maxChunkWorks         = 10
+	maxChunkBytes         = 16 * 1024
+	maxSampleFilesPerWork = 6
+	maxEpisodeChunkFiles  = 20
+	maxAdaptiveSplitDepth = 2
 )
 
 type cacheEntry struct {
@@ -43,7 +46,7 @@ type Service struct {
 func New(settingsSvc *settings.Service) *Service {
 	return &Service{
 		settings:  settingsSvc,
-		http:      httpx.NewClient(httpx.ClientOptions{Timeout: 60 * time.Second}),
+		http:      httpx.NewClient(httpx.ClientOptions{Timeout: modelRequestTimeout}),
 		cache:     make(map[string]cacheEntry),
 		protocols: make(map[string]modelProtocol),
 	}
@@ -97,32 +100,31 @@ func (s *Service) EnhanceWithProgress(
 	completedChunks := 0
 	processedWorks := 0
 	for chunkIndex, chunk := range chunks {
-		reportRecognitionProgress(progress, recognition.BatchProgress{
-			Total:        len(req.Works),
-			Completed:    result.Cached + processedWorks,
-			Cached:       result.Cached,
-			Failed:       result.Failed,
-			CurrentChunk: chunkIndex + 1,
-			TotalChunks:  len(chunks),
+		items, failed, err := s.recognizeChunkAdaptive(ctx, cfg, chunk, 0, func(batchSize, splitDepth int) {
+			reportRecognitionProgress(progress, recognition.BatchProgress{
+				Total:                 len(req.Works),
+				Completed:             result.Cached + processedWorks,
+				Cached:                result.Cached,
+				Failed:                result.Failed,
+				CurrentChunk:          chunkIndex + 1,
+				TotalChunks:           len(chunks),
+				CurrentBatchSize:      batchSize,
+				SplitDepth:            splitDepth,
+				AttemptStartedAt:      time.Now().UnixMilli(),
+				AttemptTimeoutSeconds: int(modelRequestTimeout / time.Second),
+				RetryingSmallerBatch:  splitDepth > 0,
+			})
 		})
-		items, err := s.recognizeChunk(ctx, cfg, chunk)
 		processedWorks += len(chunk)
+		result.Failed += failed
 		if err != nil {
 			if firstChunkErr == nil {
 				firstChunkErr = err
 			}
-			result.Failed += len(chunk)
-			reportRecognitionProgress(progress, recognition.BatchProgress{
-				Total:        len(req.Works),
-				Completed:    result.Cached + processedWorks,
-				Cached:       result.Cached,
-				Failed:       result.Failed,
-				CurrentChunk: chunkIndex + 1,
-				TotalChunks:  len(chunks),
-			})
-			continue
 		}
-		completedChunks++
+		if len(items) > 0 {
+			completedChunks++
+		}
 		valid := validateResults(chunk, items)
 		for _, item := range valid {
 			work, ok := findWork(chunk, item.WorkID)
@@ -229,6 +231,135 @@ func (s *Service) recognizeChunk(ctx context.Context, cfg Config, works []recogn
 	return items, nil
 }
 
+func (s *Service) recognizeChunkAdaptive(
+	ctx context.Context,
+	cfg Config,
+	works []recognition.Work,
+	depth int,
+	onAttempt func(batchSize, splitDepth int),
+) ([]recognition.WorkResult, int, error) {
+	if onAttempt != nil {
+		onAttempt(len(works), depth)
+	}
+	items, err := s.recognizeChunk(ctx, cfg, works)
+	if err == nil {
+		return items, 0, nil
+	}
+	if !isModelTimeout(err) || len(works) <= 1 || depth >= maxAdaptiveSplitDepth {
+		return nil, len(works), err
+	}
+	middle := len(works) / 2
+	leftItems, leftFailed, leftErr := s.recognizeChunkAdaptive(ctx, cfg, works[:middle], depth+1, onAttempt)
+	if ctx.Err() != nil {
+		return leftItems, leftFailed + len(works[middle:]), ctx.Err()
+	}
+	rightItems, rightFailed, rightErr := s.recognizeChunkAdaptive(ctx, cfg, works[middle:], depth+1, onAttempt)
+	items = append(leftItems, rightItems...)
+	if leftErr != nil {
+		return items, leftFailed + rightFailed, leftErr
+	}
+	return items, leftFailed + rightFailed, rightErr
+}
+
+func (s *Service) ResolveEpisodes(
+	ctx context.Context,
+	req recognition.EpisodeRequest,
+) ([]recognition.FileResult, error) {
+	if !s.Available() || len(req.Files) == 0 {
+		return nil, nil
+	}
+	cfg := s.runtimeConfig()
+	chunks := splitEpisodeFiles(req.Files)
+	resolved := make([]recognition.FileResult, 0, len(req.Files))
+	var firstErr error
+	for _, files := range chunks {
+		part := req
+		part.Files = files
+		items, err := s.resolveEpisodeChunkAdaptive(ctx, cfg, part, 0)
+		resolved = append(resolved, items...)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if ctx.Err() != nil {
+			return resolved, ctx.Err()
+		}
+	}
+	return resolved, firstErr
+}
+
+func (s *Service) resolveEpisodeChunk(
+	ctx context.Context,
+	cfg Config,
+	req recognition.EpisodeRequest,
+) ([]recognition.FileResult, error) {
+	payload, _ := json.Marshal(req)
+	raw, err := s.chat(ctx, cfg, []chatMessage{
+		{Role: "system", Content: episodeSystemPrompt},
+		{Role: "user", Content: string(payload)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	items, err := parseEpisodeResponse(raw)
+	if err != nil {
+		repair, repairErr := s.chat(ctx, cfg, []chatMessage{
+			{Role: "system", Content: episodeRepairPrompt},
+			{Role: "user", Content: raw},
+		})
+		if repairErr != nil {
+			return nil, repairErr
+		}
+		items, err = parseEpisodeResponse(repair)
+		if err != nil {
+			return nil, domain.Errorf(domain.CodeDriverError, "模型返回的集数格式不正确")
+		}
+	}
+	return validateEpisodeResults(req.Files, items), nil
+}
+
+func (s *Service) resolveEpisodeChunkAdaptive(
+	ctx context.Context,
+	cfg Config,
+	req recognition.EpisodeRequest,
+	depth int,
+) ([]recognition.FileResult, error) {
+	items, err := s.resolveEpisodeChunk(ctx, cfg, req)
+	if err == nil {
+		return items, nil
+	}
+	if !isModelTimeout(err) || len(req.Files) <= 1 || depth >= maxAdaptiveSplitDepth {
+		return nil, err
+	}
+	middle := len(req.Files) / 2
+	left := req
+	left.Files = req.Files[:middle]
+	leftItems, leftErr := s.resolveEpisodeChunkAdaptive(ctx, cfg, left, depth+1)
+	if ctx.Err() != nil {
+		return leftItems, ctx.Err()
+	}
+	right := req
+	right.Files = req.Files[middle:]
+	rightItems, rightErr := s.resolveEpisodeChunkAdaptive(ctx, cfg, right, depth+1)
+	items = append(leftItems, rightItems...)
+	if leftErr != nil {
+		return items, leftErr
+	}
+	return items, rightErr
+}
+
+func parseEpisodeResponse(raw string) ([]recognition.FileResult, error) {
+	var out struct {
+		Files []recognition.FileResult `json:"files"`
+	}
+	if err := decodeJSONObject(raw, &out); err != nil {
+		return nil, err
+	}
+	if out.Files == nil {
+		return nil, errors.New("missing files")
+	}
+	return out.Files, nil
+}
+
 func parseRecognitionResponse(raw string) ([]recognition.WorkResult, error) {
 	var out struct {
 		Items []recognition.WorkResult `json:"items"`
@@ -283,12 +414,37 @@ func sampleWorks(works []recognition.Work) []recognition.Work {
 }
 
 func sampleWork(work recognition.Work) recognition.Work {
-	const side = 60
-	if len(work.Files) <= side*2 {
+	if len(work.Files) <= maxSampleFilesPerWork {
 		return work
 	}
-	work.Files = append(append([]recognition.File(nil), work.Files[:side]...), work.Files[len(work.Files)-side:]...)
+	files := make([]recognition.File, 0, maxSampleFilesPerWork)
+	last := len(work.Files) - 1
+	for i := 0; i < maxSampleFilesPerWork; i++ {
+		index := i * last / (maxSampleFilesPerWork - 1)
+		files = append(files, work.Files[index])
+	}
+	work.Files = files
 	return work
+}
+
+func splitEpisodeFiles(files []recognition.File) [][]recognition.File {
+	chunks := make([][]recognition.File, 0)
+	current := make([]recognition.File, 0, maxEpisodeChunkFiles)
+	size := 0
+	for _, file := range files {
+		encoded, _ := json.Marshal(file)
+		if len(current) > 0 && (len(current) >= maxEpisodeChunkFiles || size+len(encoded) > maxChunkBytes) {
+			chunks = append(chunks, current)
+			current = make([]recognition.File, 0, maxEpisodeChunkFiles)
+			size = 0
+		}
+		current = append(current, file)
+		size += len(encoded)
+	}
+	if len(current) > 0 {
+		chunks = append(chunks, current)
+	}
+	return chunks
 }
 
 func validateResults(works []recognition.Work, items []recognition.WorkResult) []recognition.WorkResult {
@@ -327,30 +483,36 @@ func validateResults(works []recognition.Work, items []recognition.WorkResult) [
 		if item.Season != nil && (*item.Season < 0 || *item.Season > 100) {
 			item.Season = nil
 		}
-		allowedFiles := make(map[string]struct{}, len(work.Files))
-		for _, file := range work.Files {
-			allowedFiles[file.SourceID] = struct{}{}
+		// 内置规则从 SxxExx 等明确标记得到的季号比模型推断更可靠。
+		// 模型返回冲突值时丢弃其季号，作品标题等其他识别结果仍可使用。
+		if work.CandidateSeason != nil && item.Season != nil && *work.CandidateSeason != *item.Season {
+			item.Season = nil
 		}
-		seenFiles := make(map[string]struct{}, len(item.Files))
-		files := make([]recognition.FileResult, 0, len(item.Files))
-		for _, file := range item.Files {
-			if _, ok := allowedFiles[file.SourceID]; !ok {
-				continue
-			}
-			if _, duplicate := seenFiles[file.SourceID]; duplicate {
-				continue
-			}
-			if file.Episode != nil && (*file.Episode < 0 || *file.Episode > 100000) {
-				continue
-			}
-			file.Kind = strings.ToLower(strings.TrimSpace(file.Kind))
-			if file.Kind != "episode" && file.Kind != "movie" && file.Kind != "extra" {
-				file.Kind = ""
-			}
-			seenFiles[file.SourceID] = struct{}{}
-			files = append(files, file)
+		item.Files = nil
+		out = append(out, item)
+	}
+	return out
+}
+
+func validateEpisodeResults(
+	files []recognition.File,
+	items []recognition.FileResult,
+) []recognition.FileResult {
+	allowed := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		allowed[file.SourceID] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]recognition.FileResult, 0, len(items))
+	for _, item := range items {
+		if _, ok := allowed[item.SourceID]; !ok || item.Episode == nil || *item.Episode < 0 || *item.Episode > 100000 {
+			continue
 		}
-		item.Files = files
+		if _, duplicate := seen[item.SourceID]; duplicate {
+			continue
+		}
+		seen[item.SourceID] = struct{}{}
+		item.Kind = "episode"
 		out = append(out, item)
 	}
 	return out
@@ -418,3 +580,4 @@ func workPosition(works []recognition.Work, id string) int {
 
 var _ recognition.Enhancer = (*Service)(nil)
 var _ recognition.ProgressEnhancer = (*Service)(nil)
+var _ recognition.EpisodeResolver = (*Service)(nil)

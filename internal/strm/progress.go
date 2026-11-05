@@ -17,11 +17,15 @@ const (
 	ScanPhaseMetadataCleanup = "cleaning_metadata"
 )
 
+// metadataProgressUnset 是 MetadataTotal/MetadataDone 的哨兵值，表示不上报该字段；用负数，0 是合法进度。
+const metadataProgressUnset = -1
+
 type ScanProgressUpdate struct {
-	Phase         string
-	DirDelta      int
-	FileDelta     int
-	Label         string
+	Phase     string
+	DirDelta  int
+	FileDelta int
+	Label     string
+	// 为哨兵值时接收方保留原值；构造 update 要显式写入哨兵，否则 0 会被当成进度而清空。
 	MetadataTotal int
 	MetadataDone  int
 }
@@ -111,6 +115,19 @@ func (s *Service) IsTaskRunning(taskID int64) bool {
 	return s.isTaskRunning(taskID)
 }
 
+// IsTaskBusy 同时覆盖扫描和任务目录搬移，供外部目录监听忽略程序自身的文件变动。
+func (s *Service) IsTaskBusy(taskID int64) bool {
+	if s == nil || taskID <= 0 {
+		return false
+	}
+	s.mu.Lock()
+	_, fileBusy := s.fileOperations[taskID]
+	running := s.running[taskID]
+	recentInternalChange := time.Now().Before(s.internalMutationUntil[taskID])
+	s.mu.Unlock()
+	return running || fileBusy || recentInternalChange
+}
+
 func (s *Service) TaskListMeta(taskID int64, dbStatus string) TaskListMeta {
 	s.mu.Lock()
 	running := s.running[taskID]
@@ -141,10 +158,12 @@ func reportScanProgress(r ScanProgressReporter, phase string, dirDelta, fileDelt
 		return
 	}
 	r(ScanProgressUpdate{
-		Phase:     phase,
-		DirDelta:  dirDelta,
-		FileDelta: fileDelta,
-		Label:     label,
+		Phase:         phase,
+		DirDelta:      dirDelta,
+		FileDelta:     fileDelta,
+		Label:         label,
+		MetadataTotal: metadataProgressUnset,
+		MetadataDone:  metadataProgressUnset,
 	})
 }
 
@@ -157,8 +176,10 @@ func reportMetadataActionProgress(r ScanProgressReporter, phase string, done, to
 		return
 	}
 	u := ScanProgressUpdate{
-		Phase: phase,
-		Label: label,
+		Phase:         phase,
+		Label:         label,
+		MetadataTotal: metadataProgressUnset,
+		MetadataDone:  metadataProgressUnset,
 	}
 	if total >= 0 {
 		u.MetadataTotal = total
@@ -197,7 +218,7 @@ func (s *Service) FixStaleRunningAsync(taskID int64) {
 		if err := s.repo.UpdateScan(ctx, taskID, domain.StrmScanPatch{
 			Status: domain.StrmStatusActive,
 		}); err != nil {
-			s.log.Warn("strm fix stale running failed", "task_id", taskID, "err", err)
+			s.log.Warn("STRM 修复残留运行状态失败", "task_id", taskID, "err", err)
 		}
 	}()
 }
@@ -205,7 +226,7 @@ func (s *Service) FixStaleRunningAsync(taskID int64) {
 func (s *Service) recoverStaleRunningTasks(ctx context.Context) {
 	tasks, err := s.repo.List(ctx)
 	if err != nil {
-		s.log.Warn("strm recover stale running failed", "err", err)
+		s.log.Warn("STRM 恢复残留运行状态失败", "err", err)
 		return
 	}
 	persistCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -217,7 +238,7 @@ func (s *Service) recoverStaleRunningTasks(ctx context.Context) {
 		if err := s.repo.UpdateScan(persistCtx, task.ID, domain.StrmScanPatch{
 			Status: domain.StrmStatusActive,
 		}); err != nil {
-			s.log.Warn("strm recover stale running task failed", "task_id", task.ID, "err", err)
+			s.log.Warn("STRM 恢复残留运行任务失败", "task_id", task.ID, "err", err)
 		}
 	}
 }

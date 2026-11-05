@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import { containsQuery } from "@/utils/format";
 import { computed, onMounted, reactive, ref } from "vue";
 import { getApiErrorMessage } from "@/api/client";
 import { localUploadApi, type LocalUploadMapping } from "@/api/cloudTools";
 import { toast } from "@/composables/useToast";
 import AppButton from "@/components/base/AppButton.vue";
-import CloudToolCard from "@/components/admin/CloudToolCard.vue";
+import ToolCard from "@/components/admin/ToolCard.vue";
 import ProxyWorkspace, { type ProxyField, type ProxyWorkspaceItem } from "@/components/admin/ProxyWorkspace.vue";
 
 const props = withDefaults(defineProps<{ searchQuery?: string }>(), { searchQuery: "" });
@@ -39,8 +40,7 @@ const workspaceFields: ProxyField[] = [
 ];
 
 function matches(title: string) {
-  const q = props.searchQuery.trim().toLowerCase();
-  return !q || title.toLowerCase().includes(q);
+  return containsQuery(title, props.searchQuery);
 }
 
 async function load() {
@@ -155,7 +155,7 @@ async function removeMapping() {
 
 <template>
   <div v-show="matches('从服务器上传')">
-    <CloudToolCard
+    <ToolCard
       :enabled="localEnabled"
       name="从服务器上传"
       driver="全部网盘 · 服务器目录上传"
@@ -192,14 +192,14 @@ async function removeMapping() {
           目录映射
         </AppButton>
       </template>
-    </CloudToolCard>
+    </ToolCard>
 
     <ProxyWorkspace
       v-model="localForm"
       :open="mappingOpen"
       title="从服务器上传 · 目录映射设置"
-      caption="映射目录"
-      icon="📁"
+      caption=""
+      icon="hand-folder"
       :subtitle="selectedName ? `容器内路径 · ${localForm.path || '未填写'}` : ''"
       :items="workspaceItems"
       :selected-id="selectedName"
@@ -221,43 +221,4 @@ async function removeMapping() {
 </template>
 
 <style scoped>
-.check-toggle {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 0;
-  padding: 0;
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  background: var(--border);
-  color: var(--text-muted);
-  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
-}
-
-.check-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
-.check-toggle:hover {
-  background: var(--surface-hover);
-}
-
-.check-toggle.on {
-  background: var(--success);
-  color: #fff;
-  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.16);
-}
-
-.check-toggle.on:hover {
-  background: color-mix(in srgb, var(--success) 88%, #000);
-}
-
-.check-toggle:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
 </style>

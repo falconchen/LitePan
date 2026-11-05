@@ -15,8 +15,9 @@ import (
 
 type Driver struct {
 	driver.AuthRefreshControl
-	add    Addition
-	client *http.Client
+	add          Addition
+	client       *http.Client
+	uploadClient *http.Client
 
 	intervalGate driver.RequestIntervalGate
 	persist      driver.AuthPersistFunc
@@ -42,6 +43,7 @@ var config = driver.Config{
 	TokenLifetime:          30 * 24 * time.Hour,
 	RefreshAdvance:         10 * time.Hour,
 	UploadConflictPolicies: []string{"overwrite", "rename", "skip", "fail"},
+	InternalExperimental:   true,
 }
 
 func New() driver.Driver { return &Driver{} }
@@ -66,6 +68,9 @@ func (d *Driver) Init(ctx context.Context) error {
 	if d.client == nil {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 60 * time.Second})
 	}
+	if d.uploadClient == nil {
+		d.uploadClient = httpx.NewUploadClient(d.client, 60*time.Second, config.UploadUseHTTP2)
+	}
 	authorization := d.currentAuthorization()
 	if authorization == "" {
 		authorization = normalizeAuthorization(d.add.AccessToken)
@@ -85,6 +90,7 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(context.Context) error {
 	httpx.CloseClient(d.client)
+	httpx.CloseClient(d.uploadClient)
 	return nil
 }
 

@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import "@fortawesome/fontawesome-free/css/all.min.css";
 import {
   computed,
   defineAsyncComponent,
@@ -291,7 +290,7 @@ onMounted(async () => {
 
     <AdminEmptyState
       v-if="!cachedPageComponent && !['settings', 'cross-transfer', 'share'].includes(page)"
-      icon="🚧"
+      icon="screwdriver-wrench"
       :title="`「${nav.find((n) => n.key === page)?.label}」功能开发中`"
     />
     <KeepAlive>

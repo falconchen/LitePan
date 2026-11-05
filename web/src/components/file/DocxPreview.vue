@@ -6,6 +6,8 @@ import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
 import { formatSize } from "@/utils/format";
 import PreviewHeader from "./PreviewHeader.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
 
 const DOCX_PREVIEW_MAX_BYTES = 50 * 1024 * 1024;
 const MIN_ZOOM = 50;
@@ -172,27 +174,24 @@ onUnmounted(() => {
           <strong>正在解析 DOCX…</strong>
         </div>
 
-        <div v-else-if="error" class="docx-preview__state docx-preview__error" role="alert">
-          <i class="fa-solid fa-file-word" aria-hidden="true" />
-          <strong>无法预览这个文档</strong>
-          <span>{{ error }}</span>
-          <button type="button" @click="emit('download', file)">下载文件</button>
-        </div>
+        <PreviewState v-else-if="error" class="docx-preview__state docx-preview__error" icon="file-word" tone="error" title="无法预览这个文档" :message="error">
+          <template #actions><button type="button" @click="emit('download', file)">下载文件</button></template>
+        </PreviewState>
       </section>
 
       <div v-if="!loading && !error" class="docx-preview__toolbar" aria-label="文档缩放工具栏">
         <button type="button" title="缩小（-）" :disabled="zoom <= MIN_ZOOM" @click="zoomOut">
-          <i class="fa-solid fa-minus" aria-hidden="true" />
+          <SvgIcon name="minus" size="1em" />
         </button>
         <button type="button" class="docx-preview__scale" title="实际大小（100%）" @click="setZoom(100)">
           {{ zoomText }}
         </button>
         <button type="button" title="放大（+）" :disabled="zoom >= MAX_ZOOM" @click="zoomIn">
-          <i class="fa-solid fa-plus" aria-hidden="true" />
+          <SvgIcon name="plus" size="1em" />
         </button>
         <i class="docx-preview__divider" aria-hidden="true" />
         <button type="button" title="适应宽度" @click="fitWidth">
-          <i class="fa-solid fa-arrows-left-right-to-line" aria-hidden="true" />
+          <SvgIcon name="arrows-left-right-to-line" size="1em" />
         </button>
       </div>
     </main>
@@ -230,21 +229,9 @@ onUnmounted(() => {
 .docx-preview__state {
   position: fixed;
   top: 48%;
-  left: 50%;
   z-index: 10;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 10px;
   background: rgb(5 14 28 / 90%);
-  box-shadow: 0 18px 55px rgb(0 0 0 / 34%);
-  transform: translate(-50%, -50%);
 }
-
-.docx-preview__state strong { font-size: 13px; font-weight: 550; }
-
 
 .docx-preview__error {
   width: min(430px, calc(100vw - 32px));
@@ -253,13 +240,12 @@ onUnmounted(() => {
   text-align: center;
 }
 
-.docx-preview__error > i { color: #68a9ff; font-size: 30px; }
 .docx-preview__error span { color: #9eb0c8; font-size: 13px; line-height: 1.7; }
 .docx-preview__error button {
   margin-top: 3px;
   padding: 9px 18px;
   border: 1px solid #268bff;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: #187ce0;
   font-weight: 650;
 }
@@ -274,7 +260,7 @@ onUnmounted(() => {
   gap: 3px;
   padding: 5px;
   border: 1px solid rgb(151 181 224 / 18%);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: rgb(4 13 27 / 82%);
   box-shadow: 0 12px 38px rgb(0 0 0 / 30%);
   backdrop-filter: blur(14px);
@@ -288,7 +274,7 @@ onUnmounted(() => {
   width: 39px;
   height: 38px;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: #d4dfed;
   font-size: 13px;
@@ -298,7 +284,6 @@ onUnmounted(() => {
 .docx-preview__toolbar button:disabled { cursor: default; opacity: 0.25; }
 .docx-preview__toolbar .docx-preview__scale { width: 50px; color: #8fc7ff; font-size: 11px; font-weight: 650; }
 .docx-preview__divider { width: 1px; height: 24px; margin: 0 4px; background: rgb(145 174 216 / 18%); }
-
 
 @media (max-width: 760px) {
   .docx-preview__stage { inset: 58px 0 0; }

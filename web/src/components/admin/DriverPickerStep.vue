@@ -224,7 +224,7 @@ function driverAuthLabel(driver: DriverInfo) {
             :logo="driver.card_logo"
             :color="driver.card_color"
             :name="driver.display_name"
-            :size="30"
+            :size="32"
           />
           <span class="mini-card__name">{{ driver.display_name }}</span>
           <span v-if="driver.internal_experimental" class="mini-card__exp">实验</span>
@@ -293,7 +293,7 @@ function driverAuthLabel(driver: DriverInfo) {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   isolation: isolate;
 }
 .carousel__track {
@@ -327,7 +327,7 @@ function driverAuthLabel(driver: DriverInfo) {
       color-mix(in srgb, var(--driver-color, var(--brand)) 7%, var(--surface)) 100%
     );
   border: 2px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   display: flex;
   align-items: center;
@@ -498,7 +498,7 @@ function driverAuthLabel(driver: DriverInfo) {
 .mini-card {
   height: 60px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface-sunken);
   display: flex;
   align-items: center;
@@ -546,7 +546,7 @@ function driverAuthLabel(driver: DriverInfo) {
   height: 100%;
   min-height: 0;
   border: 2px dashed var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   color: var(--text-muted);
   display: flex;
   align-items: center;
@@ -572,7 +572,7 @@ function driverAuthLabel(driver: DriverInfo) {
   width: 40px;
   height: 40px;
   border: 2px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--brand);
   display: inline-flex;
@@ -605,7 +605,7 @@ function driverAuthLabel(driver: DriverInfo) {
   height: 40px;
   padding: 10px 36px 10px 42px;
   border: 2px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   font-size: 13px;
   color: var(--text);
   background: var(--surface);

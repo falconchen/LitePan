@@ -27,8 +27,8 @@ const emit = defineEmits<{ click: [MouseEvent] }>();
     :aria-label="label"
     @click="emit('click', $event)"
   >
-    <i v-if="iconClass" :class="iconClass" aria-hidden="true" />
-    <SvgIcon v-else-if="icon" :name="icon" :size="13" />
+    <SvgIcon v-if="iconClass" :name="iconClass" :size="14" />
+    <SvgIcon v-else-if="icon" :name="icon" :size="14" />
     <span v-if="!iconOnly">{{ label }}</span>
   </button>
 </template>

@@ -267,7 +267,7 @@ func (s *Service) buildNameAlignPreview(ctx context.Context, in NameAlignPreview
 	}
 
 	sort.Slice(sampleCandidates, func(i, j int) bool {
-		return betterNameAlignSampleOrder(sampleCandidates[i], sampleCandidates[j])
+		return betterNameAlignSample(sampleCandidates[i], sampleCandidates[j])
 	})
 	sampleCandidates = uniqueNameAlignSampleCandidates(sampleCandidates)
 
@@ -359,19 +359,9 @@ func uniqueNameAlignSampleCandidates(items []alignAnalyzedFile) []alignAnalyzedF
 		out = append(out, item)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		return betterNameAlignSampleOrder(out[i], out[j])
+		return betterNameAlignSample(out[i], out[j])
 	})
 	return out
-}
-
-func betterNameAlignSampleOrder(candidate, current alignAnalyzedFile) bool {
-	if candidate.meta.episode != current.meta.episode {
-		return candidate.meta.episode > current.meta.episode
-	}
-	if candidate.score != current.score {
-		return candidate.score > current.score
-	}
-	return strings.ToLower(candidate.item.Name) < strings.ToLower(current.item.Name)
 }
 
 func betterNameAlignSample(candidate, current alignAnalyzedFile) bool {

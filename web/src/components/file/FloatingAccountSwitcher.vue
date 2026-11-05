@@ -61,8 +61,8 @@ function accountColor(account: Account): string {
   width: 38px;
   height: 38px;
   border: 0;
-  border-radius: 10px;
-  background: #fff;
+  border-radius: var(--radius-control);
+  background: var(--surface);
   color: var(--driver-color, #6366f1);
   cursor: pointer;
   display: inline-flex;
@@ -101,12 +101,12 @@ function accountColor(account: Account): string {
   height: 100%;
   object-fit: contain;
   display: block;
-  border-radius: 10px;
-  background: #fff;
+  border-radius: var(--radius-control);
+  background: var(--surface);
 }
 .floating-switcher__btn--logo {
   overflow: visible;
-  background: #fff;
+  background: var(--surface);
 }
 .floating-switcher__btn--logo.floating-switcher__btn--active .floating-switcher__logo {
   box-shadow: 0 0 0 2px var(--driver-color, #6366f1);
@@ -117,7 +117,7 @@ function accountColor(account: Account): string {
   top: 50%;
   transform: translateY(-50%) translateX(-4px);
   padding: 6px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgba(15, 23, 42, 0.92);
   color: #fff;
   font-size: 12px;

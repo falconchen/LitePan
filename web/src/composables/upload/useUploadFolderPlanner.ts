@@ -46,7 +46,6 @@ export function useUploadFolderPlanner(ctx: UploadActionsCtx) {
     let preparationCommitted = false;
     try {
       store.uploadTaskPanelOpen.value = true;
-      store.uploadTaskPanelLoading.value = false;
 
       const normalized = selectedFiles
         .map((file) => ({ file, relativePath: normalizeUploadRelativePath(file) }))
@@ -278,7 +277,6 @@ export function useUploadFolderPlanner(ctx: UploadActionsCtx) {
           batchRootParentId: p.batchRootParentId,
           batchRootOwned: p.batchRootOwned,
         });
-        store.ensureUploadTaskDisplayOrder(p.localTask);
       }
       const localTasks = [...skipped, ...plans.map((p) => p.localTask)];
       store.removeLocalUploadTask(preparingTask.task_id);
@@ -326,8 +324,6 @@ export function useUploadFolderPlanner(ctx: UploadActionsCtx) {
         }
       }
       folderPreparationRunning = false;
-      store.uploadTaskPanelLoading.value = false;
-      store.uploadTaskPanelLoadingText.value = "正在准备上传任务...";
     }
   }
 

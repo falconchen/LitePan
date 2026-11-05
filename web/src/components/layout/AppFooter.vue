@@ -35,21 +35,21 @@ const badges = [
   {
     key: "docs",
     href: APP_URL,
-    icon: "globe",
+    icon: "hand-globe",
     label: "当前版本",
     value: APP_VERSION_BADGE,
   },
   {
     key: "github",
     href: GITHUB_URL,
-    icon: "github",
+    icon: "hand-github",
     label: "项目地址",
     value: "Github 仓库",
   },
   {
     key: "collab",
     href: COLLAB_URL,
-    icon: "bilibili",
+    icon: "hand-bilibili",
     label: "联合测评",
     value: COLLAB_BADGE_TEXT,
   },
@@ -96,7 +96,7 @@ const badges = [
           :title="perfOpen ? '收起性能信息' : '展开性能信息'"
           @click="togglePerf"
         >
-          <SvgIcon name="lightning" :size="14" class-name="footer-item__icon" />
+          <SvgIcon name="badge-lightning" :size="14" class-name="footer-item__icon" />
           <template v-if="perfOpen">
             <span class="footer-item__label">响应</span>
             <span class="footer-item__value">{{ status.responseTime }}</span>
@@ -132,7 +132,7 @@ const badges = [
             >
               <path d="m3.5 8.5 3 3 6-7" />
             </svg>
-            <SvgIcon v-else name="upload" :size="14" />
+            <SvgIcon v-else name="badge-upload" :size="14" />
           </span>
           <span v-if="status.uploadTaskCount > 0" class="footer-status-btn__badge">
             {{ Math.min(status.uploadTaskCount, 99) }}
@@ -239,7 +239,7 @@ const badges = [
   height: 16px;
   padding: 0 4px;
   border: 2px solid var(--surface-sunken);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--danger);
   color: #fff;
   font-size: 10px;

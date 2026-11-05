@@ -26,8 +26,7 @@ func (s *Service) Cleanup(ctx context.Context, req CleanupRequest) (CleanupRepor
 		delete(s.scans, scanID)
 	}
 	s.mu.Unlock()
-	// 报告长期保留（不因“新鲜期”过期而拒绝）：删除前的安全性由各清理项的二次复核保证
-	// （重新核对任务占用、路径存在性、symlink 与类型），因此旧报告也可安全执行。
+	// 报告长期保留，过期也允许执行：删除前各清理项会二次复核任务占用、路径、symlink 与类型。
 	if !ok {
 		return CleanupReport{}, domain.Errorf(domain.CodeValidation, "扫描结果不存在，请重新扫描")
 	}
@@ -119,6 +118,8 @@ func (s *Service) cleanupOne(ctx context.Context, item planItem) CleanupItemResu
 		result, err = s.cleanupFuseCache(ctx, item)
 	case kindCoverSession:
 		result, err = s.cleanupCoverSession(item)
+	case kindDatabaseRows, kindNotifications, kindDatabaseTables:
+		result, err = s.cleanupDatabaseGarbage(ctx, item)
 	case kindDatabase:
 		result, err = s.cleanupDatabase(ctx, item)
 	default:
@@ -131,6 +132,32 @@ func (s *Service) cleanupOne(ctx context.Context, item planItem) CleanupItemResu
 		result.Message = err.Error()
 	}
 	return result
+}
+
+func (s *Service) cleanupDatabaseGarbage(ctx context.Context, item planItem) (CleanupItemResult, error) {
+	result := CleanupItemResult{ID: item.ID, Name: item.Name}
+	if s.opts.DB == nil {
+		result.Status, result.Message = "skipped", "数据库未就绪"
+		return result, nil
+	}
+	count, err := s.opts.DB.CleanupGarbage(ctx, item.TargetPath)
+	if err != nil {
+		return result, err
+	}
+	if count == 0 {
+		result.Status, result.Message = "skipped", "扫描后残留已不存在"
+		return result, nil
+	}
+	result.Status = "cleaned"
+	switch item.Kind {
+	case kindDatabaseTables:
+		result.Message = fmt.Sprintf("已移除 %d 张废弃表", count)
+	case kindNotifications:
+		result.Message = fmt.Sprintf("已清理 %d 条历史已读通知", count)
+	default:
+		result.Message = fmt.Sprintf("已清理 %d 条无主记录", count)
+	}
+	return result, nil
 }
 
 func (s *Service) cleanupStrmPath(ctx context.Context, item planItem) (CleanupItemResult, error) {
@@ -186,23 +213,7 @@ func (s *Service) cleanupSystemFile(item planItem) (CleanupItemResult, error) {
 	if !isSystemJunk(filepath.Base(path)) || (!pathWithin(s.opts.DataDir, path) && !pathWithin(s.opts.StrmDir, path)) {
 		return result, fmt.Errorf("系统杂项路径无效")
 	}
-	info, err := os.Lstat(path)
-	if os.IsNotExist(err) {
-		result.Status, result.Message = "skipped", "文件已不存在"
-		return result, nil
-	}
-	if err != nil {
-		return result, err
-	}
-	if !info.Mode().IsRegular() {
-		result.Status, result.Message = "skipped", "目标不再是普通文件"
-		return result, nil
-	}
-	if err := os.Remove(path); err != nil {
-		return result, err
-	}
-	result.Status, result.FreedBytes, result.Files = "cleaned", info.Size(), 1
-	return result, nil
+	return removeRegularFile(result, path)
 }
 
 func (s *Service) cleanupScrapeIndex(ctx context.Context, item planItem) (CleanupItemResult, error) {

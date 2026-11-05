@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onDeactivated, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onDeactivated, onMounted, reactive, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { getApiErrorMessage } from "@/api/client";
 import {
@@ -19,15 +19,13 @@ import {
   type FuseStatus,
 } from "@/api/fuse";
 import AppButton from "@/components/base/AppButton.vue";
-import AppCardActionButton from "@/components/base/AppCardActionButton.vue";
 import AppInput from "@/components/base/AppInput.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import AppModal from "@/components/base/AppModal.vue";
-import StatCard from "@/components/base/StatCard.vue";
 import FormField from "@/components/base/FormField.vue";
 import AccountFolderField from "@/components/admin/AccountFolderField.vue";
 import AdminSettingsDrawer from "@/components/admin/AdminSettingsDrawer.vue";
-import AdminTaskTabHeader from "@/components/admin/AdminTaskTabHeader.vue";
+import FuseSignalBand from "@/components/admin/FuseSignalBand.vue";
 import AdminStatusPill, { type AdminStatusPillTone } from "@/components/admin/AdminStatusPill.vue";
 import SettingsCard from "@/components/admin/SettingsCard.vue";
 import SettingsBoolSegment from "@/components/admin/SettingsBoolSegment.vue";
@@ -52,6 +50,8 @@ import { useAccountsStore } from "@/stores/accounts";
 import { formatSize } from "@/utils/format";
 import "@/styles/admin-shared.css";
 import "@/styles/admin-table.css";
+import { useBandVisible } from "@/composables/useBandVisible";
+import { collapseBand, expandBand } from "@/utils/bandTransition";
 
 const accountsStore = useAccountsStore();
 const { accounts } = storeToRefs(accountsStore);
@@ -61,6 +61,25 @@ const listLoading = ref(false);
 const submitting = ref(false);
 const togglingAutoMountId = ref<number | null>(null);
 const mounts = ref<FuseMount[]>([]);
+const { hidden: bandHidden, hide: hideBand, show: showBand } = useBandVisible("fuse");
+
+// 隐藏时把面板收进 ☰ 的位置，再点 ☰ 反向展开。
+function bandElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(".fuse-mgmt .signal-band") ?? null;
+}
+
+async function handleHideBand() {
+  await collapseBand(bandElement());
+  hideBand();
+  toast.info("已隐藏信息面板，可从 ☰ 恢复");
+}
+
+async function handleShowBand() {
+  showBand();
+  await nextTick();
+  await expandBand(bandElement());
+}
+
 const fuseMountList = ref<HTMLElement | null>(null);
 const { removeWithDust } = useDustRemoval();
 useAdminPageLoading("share", computed(() => listLoading.value && !mounts.value.length));
@@ -127,6 +146,10 @@ const readCacheUsageText = computed(() => {
 const readCacheRootPath = computed(() => readCacheStats.root_path || "/app/data/fuse_read_cache");
 
 const mountedCount = computed(() => mounts.value.filter((m) => m.state === "mounted").length);
+const errorMountCount = computed(() => mounts.value.filter((m) => m.state === "error").length);
+const readCacheLimitText = computed(() =>
+  readCacheStats.limit_bytes > 0 ? formatSize(readCacheStats.limit_bytes) : "未启用",
+);
 
 const drawerCanSave = computed(() => drawerDirty.value && !settingsLoading.value);
 
@@ -509,6 +532,10 @@ onMounted(async () => {
 
 defineExpose({
   openCreate,
+  // 供父级 tab 栏渲染 ☰：面板隐藏状态 + 打开面板 / 打开设置
+  bandHidden,
+  showPanel: handleShowBand,
+  openSettings: openSettingsDrawer,
   getDirty: () => settingsDrawerOpen.value && drawerDirty.value,
   revertDrawer: revertDrawerForm,
   closeSettingsDrawerSilent: () => {
@@ -523,31 +550,24 @@ defineExpose({
       当前运行实例未编译 FUSE 支持，请使用 <code>-tags fuse</code> 构建镜像后再挂载。
     </WarningBanner>
 
-    <AdminTaskTabHeader
-      settings-title="本地挂载设置"
-      settings-hint="服务开关 · 读缓存"
+    <FuseSignalBand
+      v-if="!bandHidden"
+      :mount-total="mounts.length"
+      :mounted-count="mountedCount"
+      :error-count="errorMountCount"
+      :read-cache-usage="readCacheUsageText"
+      :read-cache-blocks="readCacheStats.block_count"
+      :service-enabled="Boolean(status?.enabled)"
+      :cache-limit-text="readCacheLimitText"
+      :clearing="readCacheClearing"
+      @clear-read-cache="clearReadCacheDisk"
       @open-settings="openSettingsDrawer"
-    >
-      <StatCard icon="fa-folder" :value="mounts.length" label="挂载点" tone="blue" />
-      <StatCard icon="fa-link" :value="mountedCount" label="已挂载" tone="purple" />
-      <StatCard icon="fa-database" :value="readCacheUsageText" label="读缓存占用" tone="amber">
-        <template #actions>
-          <AppCardActionButton
-            icon-class="fas fa-trash-can"
-            label="清空读缓存"
-            variant="danger"
-            icon-only
-            :disabled="readCacheClearing"
-            title="清空读缓存"
-            @click="clearReadCacheDisk"
-          />
-        </template>
-      </StatCard>
-    </AdminTaskTabHeader>
+      @dismiss="handleHideBand"
+    />
 
     <AdminEmptyState
       v-if="!listLoading && !mounts.length"
-      icon="📂"
+      icon="hand-folder"
       title="还没有挂载点"
       description="将云盘目录映射到容器内路径，宿主机 volume 映射后即可本地访问。"
     >
@@ -1068,4 +1088,5 @@ defineExpose({
     grid-template-columns: 1fr;
   }
 }
+
 </style>

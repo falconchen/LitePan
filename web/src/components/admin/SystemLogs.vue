@@ -17,21 +17,14 @@ const hasMore = ref(false);
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, watch } from "vue";
 import { getApiErrorMessage } from "@/api/client";
-import {
-  LOG_LEVELS,
-  LOG_MODULE_GROUPS,
-  LOG_PERIODS,
-  logsApi,
-} from "@/api/logs";
-import AppBadge from "@/components/base/AppBadge.vue";
+import { LOG_LEVELS, LOG_MODULE_GROUPS, LOG_PERIODS, logsApi } from "@/api/logs";
 import AppInput from "@/components/base/AppInput.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import AppStateBlock from "@/components/base/AppStateBlock.vue";
-import StatCard from "@/components/base/StatCard.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
 import { confirm } from "@/composables/useConfirm";
-import { toast } from "@/composables/useToast";
-import { formatTime } from "@/utils/format";
+import { copyTextToClipboard, toast } from "@/composables/useToast";
+import { formatTime, formatTimeShort } from "@/utils/format";
 
 const props = withDefaults(
   defineProps<{
@@ -75,11 +68,20 @@ function levelClass(lv: number): string {
   return "debug";
 }
 
-function levelTone(lv: number): "neutral" | "info" | "warning" | "danger" {
-  if (lv >= 40) return "danger";
-  if (lv >= 30) return "warning";
-  if (lv >= 20) return "info";
-  return "neutral";
+function levelLabel(log: LogEntry): string {
+  return `${log.level_emoji} ${log.level_name}`;
+}
+
+function levelSegmentCount(key: string): number {
+  if (!stats.value) return 0;
+  if (key === "") return stats.value.total;
+  return stats.value.by_level?.[key] ?? 0;
+}
+
+function selectLevel(value: string | number) {
+  if (level.value === value) return;
+  level.value = value;
+  onFilterChange();
 }
 
 function periodRange(): { start_time?: string } {
@@ -265,15 +267,15 @@ async function changePage(target: number) {
   logsPanelRef.value?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
-function toggleDetails(id: number) {
+function toggleRow(id: number) {
   const next = new Set(expanded.value);
   if (next.has(id)) next.delete(id);
   else next.add(id);
   expanded.value = next;
 }
 
-function canShowDetails(log: LogEntry): boolean {
-  return log.level >= 40 && !!log.details && Object.keys(log.details).length > 0;
+function hasDetails(log: LogEntry): boolean {
+  return !!log.details && Object.keys(log.details).length > 0;
 }
 
 function detailsText(log: LogEntry): string {
@@ -283,6 +285,25 @@ function detailsText(log: LogEntry): string {
 function formatDetails(details: Record<string, unknown>) {
   return JSON.stringify(details, null, 2);
 }
+
+async function copyLog(log: LogEntry) {
+  const entry: Record<string, unknown> = {
+    timestamp: log.timestamp,
+    level: log.level,
+    module: log.module,
+    message: log.message,
+  };
+  if (log.account_id) entry.account_id = log.account_id;
+  if (log.driver_name) entry.driver_name = log.driver_name;
+  if (hasDetails(log)) entry.details = log.details;
+  await copyTextToClipboard(JSON.stringify(entry), {
+    successMessage: "日志已复制",
+    errorMessage: "复制失败，请手动选择日志",
+  });
+}
+
+const moduleOptions = LOG_MODULE_GROUPS.map((o) => ({ value: o.value, label: o.label }));
+const periodOptions = LOG_PERIODS.map((o) => ({ value: o.value, label: o.label }));
 
 watch(
   () => props.presetSeq,
@@ -300,247 +321,185 @@ onUnmounted(() => clearTimeout(searchTimer));
 
 <template>
   <div class="logs-page">
-    <div v-if="stats" class="logs-stats">
-      <StatCard icon="fa-file-alt" :value="stats.total" label="总日志数" tone="blue" />
-      <StatCard icon="fa-exclamation-triangle" :value="recentErrorCount" label="近 24 小时错误" tone="red" />
-      <StatCard icon="fa-cubes" :value="activeModuleCount" label="活跃模块" tone="purple" />
-      <StatCard icon="fa-list" :value="logs.length" label="本页结果数" tone="amber" />
-    </div>
-
-    <div v-if="canAcknowledgeRecentErrors" class="logs-ack-banner">
-      <div class="logs-ack-banner__copy">
-        <strong>当前有 {{ recentUnacknowledgedErrorCount }} 条未确认错误</strong>
-        <span>确认后“运行概况”会恢复正常，后续新错误仍会再次提醒。</span>
+    <section class="logs-board">
+      <!-- 统计带：原 4 张统计卡 + 未确认提示条合并成一条 -->
+      <div v-if="stats" class="logs-meta">
+        <span class="logs-meta__item">总日志 <b>{{ stats.total }}</b></span>
+        <span
+          class="logs-meta__item"
+          :class="{ 'logs-meta__item--error': recentErrorCount > 0 }"
+        >
+          近 24h 错误 <b>{{ recentErrorCount }}</b>
+        </span>
+        <span class="logs-meta__item">活跃模块 <b>{{ activeModuleCount }}</b></span>
+        <span class="logs-meta__item">本页 <b>{{ logs.length }}</b></span>
+        <span class="logs-meta__spacer" />
+        <button
+          v-if="canAcknowledgeRecentErrors"
+          type="button"
+          class="logs-ack-pill"
+          :disabled="acknowledgingRecentErrors"
+          title="确认后“运行概况”会恢复正常，后续新错误仍会再次提醒。"
+          @click="ackRecentErrors"
+        >
+          <SvgIcon name="check" :size="12" />
+          <span>{{ recentUnacknowledgedErrorCount }} 条未确认 · 一键确认</span>
+        </button>
       </div>
-      <button
-        type="button"
-        class="logs-ack-banner__action"
-        :disabled="acknowledgingRecentErrors"
-        @click="ackRecentErrors"
-      >
-        {{ acknowledgingRecentErrors ? "处理中..." : "已知晓当前错误" }}
-      </button>
-    </div>
 
-    <div class="logs-toolbar">
-      <div class="logs-filters">
-        <div class="logs-filter">
-          <label for="log-level">级别</label>
-          <AppSelect
-            id="log-level"
-            v-model="level"
-            :options="LOG_LEVELS.map((o) => ({ value: o.value, label: o.label }))"
-            @update:model-value="onFilterChange"
-          />
-        </div>
-        <div class="logs-filter">
-          <label for="log-module">模块</label>
-          <AppSelect
-            id="log-module"
-            v-model="module"
-            :options="LOG_MODULE_GROUPS.map((o) => ({ value: o.value, label: o.label }))"
-            @update:model-value="onFilterChange"
-          />
-        </div>
-        <div class="logs-filter">
-          <label for="log-period">时间范围</label>
-          <AppSelect
-            id="log-period"
-            v-model="period"
-            :options="LOG_PERIODS.map((o) => ({ value: o.value, label: o.label }))"
-            @update:model-value="onFilterChange"
-          />
-        </div>
-        <div class="logs-filter">
-          <label for="log-keyword">关键词</label>
+      <!-- 工具条：搜索 + 级别段控件 + 模块/时间 + 图标动作 -->
+      <div class="logs-toolbar">
+        <label class="logs-search" for="log-keyword">
+          <SvgIcon name="magnifying-glass" :size="14" />
           <AppInput
             id="log-keyword"
             v-model="keyword"
             placeholder="搜索消息内容…"
             @update:model-value="onKeywordInput"
           />
+        </label>
+
+        <div class="logs-seg" role="group" aria-label="级别筛选">
+          <button
+            v-for="seg in LOG_LEVELS"
+            :key="seg.label"
+            type="button"
+            class="logs-seg__btn"
+            :class="{ 'logs-seg__btn--on': level === seg.value }"
+            :aria-pressed="level === seg.value"
+            @click="selectLevel(seg.value)"
+          >
+            {{ seg.label }}
+            <span v-if="stats" class="logs-seg__count">{{ levelSegmentCount(seg.key) }}</span>
+          </button>
+        </div>
+
+        <div class="logs-select">
+          <AppSelect v-model="module" :options="moduleOptions" @update:model-value="onFilterChange" />
+        </div>
+        <div class="logs-select">
+          <AppSelect v-model="period" :options="periodOptions" @update:model-value="onFilterChange" />
+        </div>
+
+        <div class="logs-actions">
+          <button
+            type="button"
+            class="logs-action-btn logs-action-btn--primary"
+            :disabled="loading"
+            title="刷新"
+            aria-label="刷新"
+            @click="refreshAll"
+          >
+            <span class="logs-action-btn__icon">
+              <SvgIcon :name="'hand-sync-alt'" :size="18" :class-name="loading ? 'logs-action-btn__icon-spin' : ''" />
+            </span>
+          </button>
+          <button
+            type="button"
+            class="logs-action-btn"
+            title="重置"
+            aria-label="重置"
+            @click="resetFilters"
+          >
+            <span class="logs-action-btn__icon"><SvgIcon name="hand-undo-alt" :size="18" /></span>
+          </button>
+          <button
+            type="button"
+            class="logs-action-btn logs-action-btn--warning"
+            :disabled="cleaningKeepToday"
+            title="清理今天之外的"
+            aria-label="清理今天之外的"
+            @click="cleanupKeepToday"
+          >
+            <span class="logs-action-btn__icon">
+              <SvgIcon
+                :name="cleaningKeepToday ? 'hand-sync-alt' : 'hand-eraser'"
+                :size="18"
+                :class-name="cleaningKeepToday ? 'logs-action-btn__icon-spin' : ''"
+              />
+            </span>
+          </button>
+          <button
+            type="button"
+            class="logs-action-btn logs-action-btn--danger"
+            :disabled="cleaningAll"
+            title="清理所有"
+            aria-label="清理所有"
+            @click="cleanupAllLogs"
+          >
+            <span class="logs-action-btn__icon">
+              <SvgIcon
+                :name="cleaningAll ? 'hand-sync-alt' : 'hand-trash-alt'"
+                :size="18"
+                :class-name="cleaningAll ? 'logs-action-btn__icon-spin' : ''"
+              />
+            </span>
+          </button>
         </div>
       </div>
-      <div class="logs-actions">
-        <button
-          type="button"
-          class="logs-action-btn logs-action-btn--primary"
-          :disabled="loading"
-          title="刷新"
-          aria-label="刷新"
-          @click="refreshAll"
-        >
-          <span class="logs-action-btn__icon">
-            <SvgIcon :name="'fa-sync-alt'" :size="18" :class-name="loading ? 'logs-action-btn__icon-spin' : ''" />
-          </span>
-        </button>
-        <button
-          type="button"
-          class="logs-action-btn"
-          title="重置"
-          aria-label="重置"
-          @click="resetFilters"
-        >
-          <span class="logs-action-btn__icon"><SvgIcon name="fa-undo-alt" :size="18" /></span>
-        </button>
-        <button
-          type="button"
-          class="logs-action-btn logs-action-btn--warning"
-          :disabled="cleaningKeepToday"
-          title="清理今天之外的"
-          aria-label="清理今天之外的"
-          @click="cleanupKeepToday"
-        >
-          <span class="logs-action-btn__icon">
-            <SvgIcon
-              :name="cleaningKeepToday ? 'fa-sync-alt' : 'fa-eraser'"
-              :size="18"
-              :class-name="cleaningKeepToday ? 'logs-action-btn__icon-spin' : ''"
-            />
-          </span>
-        </button>
-        <button
-          type="button"
-          class="logs-action-btn logs-action-btn--danger"
-          :disabled="cleaningAll"
-          title="清理所有"
-          aria-label="清理所有"
-          @click="cleanupAllLogs"
-        >
-          <span class="logs-action-btn__icon">
-            <SvgIcon
-              :name="cleaningAll ? 'fa-sync-alt' : 'fa-trash-alt'"
-              :size="18"
-              :class-name="cleaningAll ? 'logs-action-btn__icon-spin' : ''"
-            />
-          </span>
-        </button>
-      </div>
-    </div>
 
-    <div ref="logsPanelRef" class="logs-panel">
-      <AppStateBlock v-if="loading && logs.length === 0" message="正在加载日志…" loading min-height="360px" />
-      <AppStateBlock v-else-if="logs.length === 0" message="当前筛选条件下暂无日志" min-height="360px" />
-      <template v-else>
-        <div class="logs-list" :class="{ 'logs-list--loading': loading }">
-          <article
-            v-for="log in logs"
-            :key="log.id"
-            class="log-card"
-            :class="`log-card--${levelClass(log.level)}`"
-          >
-            <header class="log-card__head">
-              <div class="log-card__tags">
-                <AppBadge :tone="levelTone(log.level)">
-                  {{ log.level_emoji }} {{ log.level_name }}
-                </AppBadge>
-                <span
-                  class="log-badge log-badge--module"
-                  :style="{ '--module-color': log.module_color }"
-                >
-                  {{ log.module_name }}
-                </span>
+      <div ref="logsPanelRef" class="logs-panel">
+        <AppStateBlock v-if="loading && logs.length === 0" message="正在加载日志…" loading min-height="360px" />
+        <AppStateBlock v-else-if="logs.length === 0" message="当前筛选条件下暂无日志" min-height="360px" />
+        <template v-else>
+          <div class="logs-list" :class="{ 'logs-list--loading': loading }">
+            <article
+              v-for="log in logs"
+              :key="log.id"
+              class="log-row"
+              :class="[`log-row--${levelClass(log.level)}`, { 'log-row--open': expanded.has(log.id) }]"
+              role="button"
+              tabindex="0"
+              :aria-expanded="expanded.has(log.id)"
+              @click="toggleRow(log.id)"
+              @keydown.enter.prevent="toggleRow(log.id)"
+              @keydown.space.prevent="toggleRow(log.id)"
+            >
+              <time class="log-row__time" :title="formatTime(log.timestamp)">
+                {{ formatTimeShort(log.timestamp) }}
+              </time>
+              <span class="log-row__level">{{ levelLabel(log) }}</span>
+              <span class="log-row__module" :style="{ '--module-color': log.module_color }">
+                <span class="log-row__dot" aria-hidden="true" />
+                <span class="log-row__module-name">{{ log.module_name }}</span>
+              </span>
+              <span class="log-row__message">{{ log.message }}</span>
+              <span class="log-row__chevron"><SvgIcon name="hand-chevron-down" :size="14" /></span>
+
+              <div v-if="expanded.has(log.id)" class="log-row__detail" @click.stop>
+                <div class="log-row__detail-head">
+                  <p class="log-row__full">{{ log.message }}</p>
+                  <button type="button" class="log-row__copy" @click="copyLog(log)">复制日志</button>
+                </div>
+                <div v-if="log.driver_name || log.account_id" class="log-row__chips">
+                  <span v-if="log.driver_name" class="log-meta-chip">驱动 {{ log.driver_name }}</span>
+                  <span v-if="log.account_id" class="log-meta-chip">账号 {{ log.account_id }}</span>
+                </div>
+                <pre v-if="hasDetails(log)" class="log-row__json">{{ detailsText(log) }}</pre>
               </div>
-              <time class="log-card__time">{{ formatTime(log.timestamp) }}</time>
-            </header>
-
-            <div class="log-card__message">{{ log.message }}</div>
-
-            <div v-if="log.driver_name || log.account_id" class="log-card__meta">
-              <span v-if="log.driver_name" class="log-meta-chip">驱动 {{ log.driver_name }}</span>
-              <span v-if="log.account_id" class="log-meta-chip">账号 {{ log.account_id }}</span>
-            </div>
-
-            <div v-if="canShowDetails(log)" class="log-card__details">
-              <button type="button" class="log-card__details-toggle" @click="toggleDetails(log.id)">
-                <span>{{ expanded.has(log.id) ? "收起详细信息" : "查看详细信息" }}</span>
-                <span>{{ expanded.has(log.id) ? "▲" : "▼" }}</span>
-              </button>
-              <pre v-if="expanded.has(log.id)" class="log-card__details-pre">{{ detailsText(log) }}</pre>
-            </div>
-          </article>
-        </div>
-        <nav v-if="page > 1 || hasMore" class="logs-pagination" aria-label="日志分页">
-          <button
-            type="button"
-            class="logs-pagination__button"
-            :disabled="page <= 1 || loading"
-            @click="changePage(page - 1)"
-          >
-            上一页
-          </button>
-          <span class="logs-pagination__current" aria-live="polite">第 {{ page }} 页</span>
-          <button
-            type="button"
-            class="logs-pagination__button"
-            :disabled="!hasMore || loading"
-            @click="changePage(page + 1)"
-          >
-            下一页
-          </button>
-        </nav>
-      </template>
-    </div>
+            </article>
+          </div>
+          <nav v-if="page > 1 || hasMore" class="logs-pagination" aria-label="日志分页">
+            <button
+              type="button"
+              class="logs-pagination__button"
+              :disabled="page <= 1 || loading"
+              @click="changePage(page - 1)"
+            >
+              上一页
+            </button>
+            <span class="logs-pagination__current" aria-live="polite">第 {{ page }} 页</span>
+            <button
+              type="button"
+              class="logs-pagination__button"
+              :disabled="!hasMore || loading"
+              @click="changePage(page + 1)"
+            >
+              下一页
+            </button>
+          </nav>
+        </template>
+      </div>
+    </section>
   </div>
 </template>
-
-<style scoped>
-.logs-ack-banner {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  border: 1px solid color-mix(in srgb, var(--warning) 24%, var(--border));
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--warning) 8%, var(--surface));
-}
-
-.logs-ack-banner__copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.logs-ack-banner__copy strong {
-  color: var(--text);
-  font-size: 13px;
-}
-
-.logs-ack-banner__copy span {
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
-.logs-ack-banner__action {
-  height: 34px;
-  flex: 0 0 auto;
-  padding: 0 14px;
-  border: 1px solid color-mix(in srgb, var(--warning) 32%, var(--border));
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.logs-ack-banner__action:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-@media (max-width: 760px) {
-  .logs-ack-banner {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .logs-ack-banner__action {
-    width: 100%;
-  }
-}
-</style>

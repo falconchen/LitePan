@@ -1,4 +1,4 @@
-export type AdminRunStatusVariant = "success" | "error" | "pending" | "running";
+export type AdminRunStatusVariant = "success" | "error" | "warning" | "pending" | "running";
 
 export function normalizeRunStatusVariant(status: string): AdminRunStatusVariant {
   if (status === "scanning" || status === "executing" || status === "running") return "running";

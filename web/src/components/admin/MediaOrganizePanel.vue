@@ -30,7 +30,6 @@ import {
   updateMediaOrganizePlanAction,
   updateMediaOrganizeTask,
   type MediaOrganizeLogEntry,
-  type MediaOrganizePlan,
   type MediaOrganizePlanAction,
   type MediaOrganizeProgress,
   type MediaOrganizeTask,
@@ -43,15 +42,12 @@ import AdminRunStatusCell from "@/components/admin/AdminRunStatusCell.vue";
 import AdminTableActionBtn from "@/components/admin/AdminTableActionBtn.vue";
 import AdminRowActions from "@/components/admin/AdminRowActions.vue";
 import type { AdminRunStatusVariant } from "@/components/admin/adminRunStatus";
-import AdminStatsGrid from "@/components/admin/AdminStatsGrid.vue";
 import FormField from "@/components/base/FormField.vue";
 import AppButton from "@/components/base/AppButton.vue";
-import AppIconButton from "@/components/base/AppIconButton.vue";
 import AppInput from "@/components/base/AppInput.vue";
 import AppModal from "@/components/base/AppModal.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
-import StatCard from "@/components/base/StatCard.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
 import FolderPickerModal from "@/components/file/FolderPickerModal.vue";
 import { useAccountPathLabel } from "@/composables/useAccountPathLabel";
@@ -75,19 +71,15 @@ import {
 } from "@/utils/tmdbHit";
 import { confirm } from "@/composables/useConfirm";
 import { toast } from "@/composables/useToast";
+import { runTmdbTest } from "@/composables/useTmdbTest";
 import { useAccountsStore } from "@/stores/accounts";
+import { formatRelativeTimeAgo } from "@/utils/format";
 import "@/styles/admin-shared.css";
 import "@/styles/admin-table.css";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const accountsStore = useAccountsStore();
 const { accounts } = storeToRefs(accountsStore);
-
-withDefaults(
-  defineProps<{
-    hideStats?: boolean;
-  }>(),
-  { hideStats: false },
-);
 
 const boolOptions = [
   { value: "true", label: "开启" },
@@ -164,19 +156,56 @@ const planEditingName = ref("");
 const planEditingSaving = ref(false);
 const tmdbTesting = ref(false);
 let planProgressTimer: number | null = null;
-const aiWaitSeconds = ref(0);
-let aiWaitStartedAt = 0;
+const aiClock = ref(Date.now());
+let aiAttemptToken = 0;
+let aiAttemptObservedAt = 0;
 let aiWaitTimer: number | null = null;
 
 const isAIRecognizing = computed(() => planProgress.value.stage === "ai_recognition");
+const aiAttemptTimeout = computed(() => planProgress.value.ai_attempt_timeout_seconds || 120);
+const aiAttemptElapsed = computed(() => {
+  if (!aiAttemptObservedAt) return 0;
+  return Math.max(0, Math.floor((aiClock.value - aiAttemptObservedAt) / 1000));
+});
+const aiRemainingSeconds = computed(() => Math.max(0, aiAttemptTimeout.value - aiAttemptElapsed.value));
+const aiCountdownPercent = computed(() => {
+  if (!aiAttemptTimeout.value) return 0;
+  return Math.min(100, (aiAttemptElapsed.value / aiAttemptTimeout.value) * 100);
+});
 const aiProgressTitle = computed(() => {
+  if (planProgress.value.ai_retrying) return "模型响应超时，已缩小批次重新提交";
+  return "正在等待 AI 模型响应";
+});
+const aiProgressDetail = computed(() => {
+  const parts: string[] = [];
   const chunk = planProgress.value.ai_chunk || 0;
   const chunks = planProgress.value.ai_chunks || 0;
-  if (chunks > 1 && chunk > 0) return `正在进行 AI 辅助识别 · 第 ${chunk}/${chunks} 批`;
-  return "正在等待 AI 识别";
+  const batchSize = planProgress.value.ai_batch_size || 0;
+  if (chunk > 0 && chunks > 0) parts.push(`第 ${chunk}/${chunks} 批`);
+  if (batchSize > 0) parts.push(`本次提交 ${batchSize} 部`);
+  parts.push(`剩余 ${aiRemainingSeconds.value} 秒`);
+  return parts.join(" · ");
 });
 
 const preview = useOrganizePlanPreview();
+
+// 计划为空时区分「目录没扫到」和「没有可整理的媒体」。
+const failedScanDirNames = computed(() =>
+  preview.scanFailed.value
+    .slice(0, 3)
+    .map((f) => f.name || f.id)
+    .join("、"),
+);
+const emptyPlanDescription = computed(() => {
+  const failed = preview.scanFailed.value.length;
+  if (failed > 0) {
+    return `有 ${failed} 个目录扫描失败，结果可能不完整；请检查账号状态后重新生成`;
+  }
+  if (preview.scannedDirs.value > 0) {
+    return `已扫描 ${preview.scannedDirs.value} 个目录，未发现可整理的媒体文件；请确认目标目录选对了、且里面确实有视频文件`;
+  }
+  return "点击「重新生成」让程序扫描目录并生成新的计划";
+});
 
 const matchOpen = ref(false);
 const matchTarget = ref<PlanNeedsMatch | null>(null);
@@ -289,6 +318,68 @@ const errorTaskCount = computed(
 );
 const taskCount = computed(() => tasks.value.length);
 
+// 仪表带用的产出汇总：各任务「最近一次」运行结果相加，不是历史累计。
+const organizedCount = computed(() =>
+  tasks.value.reduce(
+    (sum, t) => sum + Number(t.last_run_result?.renamed || 0) + Number(t.last_run_result?.moved || 0),
+    0,
+  ),
+);
+const skippedCount = computed(() =>
+  tasks.value.reduce((sum, t) => sum + Number(t.last_run_result?.skipped || 0), 0),
+);
+const lastRunLabel = computed(() => {
+  let latest = "";
+  for (const task of tasks.value) {
+    const value = task.last_run_at || "";
+    if (value && value > latest) latest = value;
+  }
+  return latest ? formatRelativeTimeAgo(latest, "尚未执行") : "尚未执行";
+});
+// 成功率只统计执行过的任务：最近一轮无失败计成功，有失败计失败。
+const organizeSuccessRate = computed<number | null>(() => {
+  let ok = 0;
+  let bad = 0;
+  for (const task of tasks.value) {
+    if (!task.last_run_at) continue;
+    if (Number(task.last_run_result?.failed || 0) > 0) bad += 1;
+    else ok += 1;
+  }
+  if (ok + bad === 0) return null;
+  return (ok / (ok + bad)) * 100;
+});
+
+// 任务统计上报给页面顶部的仪表带（目录整理页用仪表带替代了原来的三张统计卡）。
+const emit = defineEmits<{
+  stats: [
+    {
+      total: number;
+      running: number;
+      error: number;
+      organized: number;
+      skipped: number;
+      lastRunLabel: string;
+      successRate: number | null;
+    },
+  ];
+}>();
+
+watch(
+  tasks,
+  () => {
+    emit("stats", {
+      total: taskCount.value,
+      running: runningCount.value,
+      error: errorTaskCount.value,
+      organized: organizedCount.value,
+      skipped: skippedCount.value,
+      lastRunLabel: lastRunLabel.value,
+      successRate: organizeSuccessRate.value,
+    });
+  },
+  { immediate: true },
+);
+
 function accountName(id: number): string {
   return accounts.value.find((a) => a.id === id)?.name ?? `#${id}`;
 }
@@ -310,6 +401,7 @@ function isTaskActive(task: MediaOrganizeTask): boolean {
 function organizeStatusVariant(task: MediaOrganizeTask): AdminRunStatusVariant {
   if (isTaskActive(task)) return "running";
   if (task.last_run_result && (task.last_run_result.failed || 0) > 0) return "error";
+  if ((task.last_run_result?.abnormal_skipped || 0) > 0) return "warning";
   if (task.last_run_result) return "success";
   return "pending";
 }
@@ -320,6 +412,7 @@ function statusText(task: MediaOrganizeTask): string {
   if (task.status === "running") return "执行中";
   if (task.last_run_result?.stopped) return "已停止";
   if (task.last_run_result && (task.last_run_result.failed || 0) > 0) return "有失败";
+  if ((task.last_run_result?.abnormal_skipped || 0) > 0) return "已完成，需关注";
   if (task.last_run_result) return "已完成";
   return "未执行";
 }
@@ -331,15 +424,16 @@ function statusTitle(task: MediaOrganizeTask): string {
     return isTaskActive(task) ? "任务正在执行" : "任务尚未执行";
   }
   if (result.stopped) {
-    return `已停止：总数 ${result.total || 0}，改名 ${result.renamed || 0}，移动 ${result.moved || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`;
+    return `已停止：总数 ${result.total || 0}，改名 ${result.renamed || 0}，移动 ${result.moved || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}，未执行 ${result.pending || 0}`;
   }
-  return `总数 ${result.total || 0}，改名 ${result.renamed || 0}，移动 ${result.moved || 0}，跳过 ${result.skipped || 0}，失败 ${result.failed || 0}`;
+  return `总数 ${result.total || 0}，改名 ${result.renamed || 0}，移动 ${result.moved || 0}，跳过 ${result.skipped || 0}（无需处理 ${result.normal_skipped || 0} / 需关注 ${result.abnormal_skipped || 0}），失败 ${result.failed || 0}，未执行 ${result.pending || 0}`;
 }
 
 function resultSummary(task: MediaOrganizeTask): string {
   const r = task.last_run_result;
   if (!r) return "";
-  return `${r.total || 0} 项 · 改${r.renamed || 0} · 移${r.moved || 0} · 失${r.failed || 0}`;
+  return `${r.total || 0} 项 · 改${r.renamed || 0} · 移${r.moved || 0} · 失${r.failed || 0}` +
+    ((r.abnormal_skipped || 0) > 0 ? ` · 需关注 ${r.abnormal_skipped}` : "");
 }
 
 function hasActiveTasks(): boolean {
@@ -621,7 +715,7 @@ function startPlanProgressPolling(taskId: string) {
     try {
       const next = await fetchMediaOrganizeProgress(taskId);
       planProgress.value = next;
-      if (next.stage === "ai_recognition") startAIWaitTimer();
+      if (next.stage === "ai_recognition") startAIWaitTimer(next.ai_attempt_started_at);
       else stopAIWaitTimer();
     } catch {}
   };
@@ -637,12 +731,16 @@ function stopPlanProgressPolling() {
   stopAIWaitTimer();
 }
 
-function startAIWaitTimer() {
+function startAIWaitTimer(attemptToken?: number) {
+  const nextToken = Number(attemptToken || 0);
+  if (nextToken > 0 && nextToken !== aiAttemptToken) {
+    aiAttemptToken = nextToken;
+    aiAttemptObservedAt = Date.now();
+  }
   if (aiWaitTimer) return;
-  aiWaitStartedAt = Date.now();
-  aiWaitSeconds.value = 0;
+  aiClock.value = Date.now();
   aiWaitTimer = window.setInterval(() => {
-    aiWaitSeconds.value = Math.floor((Date.now() - aiWaitStartedAt) / 1000);
+    aiClock.value = Date.now();
   }, 1000);
 }
 
@@ -651,8 +749,24 @@ function stopAIWaitTimer() {
     window.clearInterval(aiWaitTimer);
     aiWaitTimer = null;
   }
-  aiWaitStartedAt = 0;
-  aiWaitSeconds.value = 0;
+  aiAttemptToken = 0;
+  aiAttemptObservedAt = 0;
+  aiClock.value = Date.now();
+}
+
+async function runPlanGeneration(taskId: string, successMessage = "", errorMessage = "计划生成失败") {
+  planLoading.value = true;
+  startPlanProgressPolling(taskId);
+  try {
+    const result = await planMediaOrganizeTask(taskId);
+    preview.loadPlan(result.plan);
+    if (successMessage) toast.success(successMessage);
+  } catch (e) {
+    toast.error(getApiErrorMessage(e, errorMessage));
+  } finally {
+    stopPlanProgressPolling();
+    planLoading.value = false;
+  }
 }
 
 async function previewPlan(task: MediaOrganizeTask) {
@@ -662,41 +776,19 @@ async function previewPlan(task: MediaOrganizeTask) {
   planOpen.value = true;
   planLoading.value = true;
   try {
-    let existing: MediaOrganizePlan | null = null;
-    try {
-      existing = await fetchMediaOrganizePlan(task.id);
-    } catch {
-      existing = null;
-    }
+    const existing = await fetchMediaOrganizePlan(task.id).catch(() => null);
     if (existing && ((existing.actions?.length ?? 0) > 0 || (existing.skipped?.length ?? 0) > 0)) {
       preview.loadPlan(existing);
       return;
     }
-    startPlanProgressPolling(task.id);
-    const result = await planMediaOrganizeTask(task.id);
-    preview.loadPlan(result.plan);
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "计划生成失败"));
   } finally {
-    stopPlanProgressPolling();
     planLoading.value = false;
   }
+  await runPlanGeneration(task.id);
 }
 
 async function refreshPlan() {
-  if (!planTaskId.value) return;
-  planLoading.value = true;
-  startPlanProgressPolling(planTaskId.value);
-  try {
-    const result = await planMediaOrganizeTask(planTaskId.value);
-    preview.loadPlan(result.plan);
-    toast.success("计划已重新生成");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "生成失败"));
-  } finally {
-    stopPlanProgressPolling();
-    planLoading.value = false;
-  }
+  if (planTaskId.value) await runPlanGeneration(planTaskId.value, "计划已重新生成", "生成失败");
 }
 
 function closePlanDialog() {
@@ -730,11 +822,7 @@ async function applyPlan() {
 async function testTmdb() {
   tmdbTesting.value = true;
   try {
-    const result = await testMediaOrganizeTmdb();
-    if (result.ok) toast.success("TMDB 连通正常");
-    else toast.error("TMDB 不可达");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "TMDB 测试失败"));
+    await runTmdbTest(() => testMediaOrganizeTmdb());
   } finally {
     tmdbTesting.value = false;
   }
@@ -875,25 +963,9 @@ defineExpose({
 
 <template>
   <div class="organize-panel">
-    <AdminStatsGrid v-if="!hideStats">
-      <StatCard icon="📋" :value="tasks.length" label="任务数量" tone="blue" />
-      <StatCard icon="▶️" :value="runningCount" label="执行中" tone="purple">
-        <template #actions>
-          <AppIconButton
-            label="刷新"
-            variant="secondary"
-            size="xs"
-            :disabled="refreshing"
-            title="刷新任务列表"
-            @click="() => loadTasks()"
-          />
-        </template>
-      </StatCard>
-    </AdminStatsGrid>
-
     <AdminEmptyState
       v-if="listReady && !refreshing && !tasks.length"
-      icon="📁"
+      icon="hand-folder"
       title="还没有整理任务"
       description="添加整理任务后，可以预览整理目标，并在确认无误后手动执行。"
     >
@@ -990,7 +1062,7 @@ defineExpose({
           <span>整理日志</span>
           <small v-if="logTaskName">（{{ logTaskName }}）</small>
         </div>
-        <button type="button" class="organize-log-panel__close" title="关闭日志" @click="closeLogPanel">×</button>
+        <button type="button" class="organize-log-panel__close" title="关闭日志" aria-label="关闭日志" @click="closeLogPanel"><SvgIcon name="xmark" :size="14" /></button>
       </header>
       <div ref="logBodyRef" class="organize-log-panel__body">
         <div v-if="!logs.length" class="organize-log-panel__empty">等待任务输出…</div>
@@ -1091,13 +1163,13 @@ defineExpose({
       </template>
 
       <div class="organize-plan-content">
-          <div v-if="planLoading" class="organize-plan-loading">
-        <BusySpinner variant="notch" :size="42" color="var(--brand)" />
+        <div v-if="planLoading" class="organize-plan-loading">
+        <BusySpinner variant="notch" :size="40" color="var(--brand)" />
         <div class="organize-plan-loading__title">
           {{ isAIRecognizing ? aiProgressTitle : "正在扫描并生成计划…" }}
         </div>
         <div v-if="isAIRecognizing" class="organize-plan-loading__metrics">
-          <span class="organize-plan-metric">待识别 {{ planProgress.ai_total || 0 }} 部</span>
+          <span class="organize-plan-metric">共需识别 {{ planProgress.ai_total || 0 }} 部</span>
           <span class="organize-plan-metric">已完成 {{ planProgress.ai_completed || 0 }} 部</span>
           <span v-if="planProgress.ai_cached" class="organize-plan-metric">复用结果 {{ planProgress.ai_cached }} 部</span>
         </div>
@@ -1107,8 +1179,18 @@ defineExpose({
           <span class="organize-plan-metric">已分组 {{ planProgress.groups || 0 }}</span>
           <span class="organize-plan-metric">已生成 {{ planProgress.actions || 0 }} 个动作</span>
         </div>
-        <div v-if="isAIRecognizing" class="organize-plan-loading__current">
-          已等待 {{ aiWaitSeconds }} 秒 · 模型响应后会自动继续
+        <div v-if="isAIRecognizing" class="organize-ai-countdown">
+          <div
+            class="organize-ai-countdown__track"
+            role="progressbar"
+            aria-label="AI 模型响应等待时间"
+            :aria-valuenow="Math.round(aiCountdownPercent)"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <span class="organize-ai-countdown__bar" :style="{ width: `${aiCountdownPercent}%` }"></span>
+          </div>
+          <div class="organize-plan-loading__current">{{ aiProgressDetail }}</div>
         </div>
         <div v-else-if="planProgress.current_dir" class="organize-plan-loading__current">
           当前批次: {{ planProgress.current_dir }}
@@ -1116,6 +1198,17 @@ defineExpose({
       </div>
 
       <template v-else>
+        <div
+          v-if="preview.scanFailed.value.length"
+          class="organize-plan-tmdb-banner"
+        >
+          <span>
+            有 {{ preview.scanFailed.value.length }} 个目录扫描失败，本次计划可能不完整：
+            {{ failedScanDirNames }}
+            <template v-if="preview.scanFailed.value.length > 3">等</template>
+            —— 请检查账号状态与目录是否仍然存在，然后重新生成。
+          </span>
+        </div>
         <div
           v-if="preview.tmdbStatus.value === 'disabled_task'"
           class="organize-plan-tmdb-banner organize-plan-tmdb-banner--info"
@@ -1169,9 +1262,9 @@ defineExpose({
         <template v-if="preview.activeTab.value === 'plan'">
           <AdminEmptyState
             v-if="!preview.groups.value.length"
-            icon="📋"
+            icon="hand-list"
             title="当前没有可执行的计划"
-            description="点击「重新生成」让程序扫描目录并生成新的计划"
+            :description="emptyPlanDescription"
           />
           <div v-else class="organize-plan-list">
             <div
@@ -1193,8 +1286,8 @@ defineExpose({
                     @keydown.enter="commitPlanActionEdit(group.dirAction!)"
                     @keydown.esc="cancelPlanActionEdit"
                   />
-                  <button type="button" class="plan-row-btn plan-row-btn--ok" :disabled="planEditingSaving" @click.stop="commitPlanActionEdit(group.dirAction!)"><i class="fas fa-check" aria-hidden="true" /></button>
-                  <button type="button" class="plan-row-btn plan-row-btn--cancel" @click.stop="cancelPlanActionEdit"><i class="fas fa-xmark" aria-hidden="true" /></button>
+                  <button type="button" class="plan-row-btn plan-row-btn--ok" :disabled="planEditingSaving" @click.stop="commitPlanActionEdit(group.dirAction!)"><SvgIcon name="check" size="1em" /></button>
+                  <button type="button" class="plan-row-btn plan-row-btn--cancel" @click.stop="cancelPlanActionEdit"><SvgIcon name="xmark" size="1em" /></button>
                 </div>
                 <div v-else class="organize-plan-group-title-wrap">
                   <span v-if="group.hasDirInfo" class="organize-plan-group-title" :title="`${group.titleOld} → ${group.titleNew}`">
@@ -1225,15 +1318,15 @@ defineExpose({
                       rel="noopener noreferrer"
                       title="在 TMDB 核对作品"
                       @click.stop
-                    ><i class="fas fa-arrow-up-right-from-square" aria-hidden="true" /></a>
+                    ><SvgIcon name="arrow-up-right-from-square" size="1em" /></a>
                     <button
                       type="button"
                       class="plan-row-btn"
                       title="手动匹配 TMDB（纠正识别）"
                       @click.stop="openMatchGroup(group)"
-                    ><i class="fas fa-magnifying-glass" aria-hidden="true" /></button>
-                    <button v-if="group.dirAction" type="button" class="plan-row-btn" title="编辑作品目录名" @click.stop="startPlanActionEdit(group.dirAction)"><i class="fas fa-pen" aria-hidden="true" /></button>
-                    <button type="button" class="plan-row-btn plan-row-btn--danger" title="从计划中移除整组" @click.stop="removePlanGroup(group)"><i class="fas fa-trash" aria-hidden="true" /></button>
+                    ><SvgIcon name="magnifying-glass" size="1em" /></button>
+                    <button v-if="group.dirAction" type="button" class="plan-row-btn" title="编辑作品目录名" @click.stop="startPlanActionEdit(group.dirAction)"><SvgIcon name="pen" size="1em" /></button>
+                    <button type="button" class="plan-row-btn plan-row-btn--danger" title="从计划中移除整组" @click.stop="removePlanGroup(group)"><SvgIcon name="trash" size="1em" /></button>
                   </span>
                 </span>
               </div>
@@ -1279,8 +1372,8 @@ defineExpose({
                             @keydown.enter="commitPlanActionEdit(row.action!)"
                             @keydown.esc="cancelPlanActionEdit"
                           />
-                          <button type="button" class="plan-row-btn plan-row-btn--ok" :disabled="planEditingSaving" @click="commitPlanActionEdit(row.action!)"><i class="fas fa-check" aria-hidden="true" /></button>
-                          <button type="button" class="plan-row-btn plan-row-btn--cancel" @click="cancelPlanActionEdit"><i class="fas fa-xmark" aria-hidden="true" /></button>
+                          <button type="button" class="plan-row-btn plan-row-btn--ok" :disabled="planEditingSaving" @click="commitPlanActionEdit(row.action!)"><SvgIcon name="check" size="1em" /></button>
+                          <button type="button" class="plan-row-btn plan-row-btn--cancel" @click="cancelPlanActionEdit"><SvgIcon name="xmark" size="1em" /></button>
                         </div>
                       </div>
                     </template>
@@ -1309,8 +1402,8 @@ defineExpose({
                         </div>
                       </div>
                       <span class="organize-plan-row-controls">
-                        <button type="button" class="plan-row-btn" title="编辑目标名" @click="startPlanActionEdit(row.action!)"><i class="fas fa-pen" aria-hidden="true" /></button>
-                        <button type="button" class="plan-row-btn plan-row-btn--danger" title="从计划中移除" @click="removePlanAction(row.action!)"><i class="fas fa-trash" aria-hidden="true" /></button>
+                        <button type="button" class="plan-row-btn" title="编辑目标名" @click="startPlanActionEdit(row.action!)"><SvgIcon name="pen" size="1em" /></button>
+                        <button type="button" class="plan-row-btn plan-row-btn--danger" title="从计划中移除" @click="removePlanAction(row.action!)"><SvgIcon name="trash" size="1em" /></button>
                       </span>
                     </template>
                   </div>
@@ -1471,7 +1564,7 @@ defineExpose({
 .organize-log-panel {
   margin-top: 14px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   overflow: hidden;
   background: #0f172a;
 }
@@ -1506,7 +1599,7 @@ defineExpose({
   width: 28px;
   height: 28px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: #94a3b8;
   font-size: 18px;
@@ -1542,7 +1635,7 @@ defineExpose({
 
 .organize-log-panel__body::-webkit-scrollbar-thumb {
   background: rgba(148, 163, 184, 0.35);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .organize-log-panel__empty {
@@ -1625,7 +1718,7 @@ defineExpose({
 .organize-mode-badge {
   display: inline-flex;
   padding: 4px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 11px;
   font-weight: 600;
   background: var(--surface-sunken);
@@ -1762,7 +1855,7 @@ defineExpose({
 
 .organize-plan-metric {
   padding: 4px 12px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-sunken);
   color: var(--text-muted);
   font-size: 12px;
@@ -1773,6 +1866,28 @@ defineExpose({
   color: var(--text-muted);
   text-align: center;
   word-break: break-all;
+}
+
+.organize-ai-countdown {
+  width: min(100%, 460px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.organize-ai-countdown__track {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-sunken);
+}
+
+.organize-ai-countdown__bar {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--brand), var(--brand-light, var(--brand)));
+  transition: width 0.25s linear;
 }
 
 .organize-plan-tmdb-banner {
@@ -1828,7 +1943,7 @@ defineExpose({
 .organize-plan-tab-count {
   font-size: 11px;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-sunken);
   color: var(--text-muted);
 }
@@ -1875,7 +1990,7 @@ defineExpose({
   gap: 12px;
   padding: 10px 12px;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface-sunken);
 }
 
@@ -1947,7 +2062,7 @@ defineExpose({
   gap: 10px;
   padding: 8px;
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--surface-sunken);
   cursor: pointer;
   text-align: left;
@@ -1962,7 +2077,7 @@ defineExpose({
   width: 52px;
   height: 74px;
   flex: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   overflow: hidden;
   background: color-mix(in srgb, var(--brand) 12%, var(--surface));
   display: flex;
@@ -2160,7 +2275,7 @@ defineExpose({
   color: var(--brand);
   background: color-mix(in srgb, var(--brand) 10%, var(--surface));
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .organize-plan-group-ai {
@@ -2169,7 +2284,7 @@ defineExpose({
   background: color-mix(in srgb, #d5a72b 15%, var(--surface));
   padding: 2px 8px;
   border: 1px solid color-mix(in srgb, #d5a72b 32%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .organize-plan-group-classification {
@@ -2178,7 +2293,7 @@ defineExpose({
   background: color-mix(in srgb, var(--success) 11%, var(--surface));
   padding: 2px 8px;
   border: 1px solid color-mix(in srgb, var(--success) 28%, transparent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .organize-plan-group-classification--degraded {
@@ -2192,7 +2307,7 @@ defineExpose({
   color: var(--warning);
   background: color-mix(in srgb, var(--warning) 12%, var(--surface));
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .organize-plan-group-count {
@@ -2209,7 +2324,7 @@ defineExpose({
   display: flex;
   align-items: center;
   padding: 9px 6px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
 }
 
 .organize-plan-row:hover {
@@ -2232,7 +2347,7 @@ defineExpose({
   font-size: 11px;
   font-weight: 600;
   padding: 2px 7px;
-  border-radius: 5px;
+  border-radius: var(--radius-xs);
   background: color-mix(in srgb, var(--brand) 10%, var(--surface));
   color: var(--brand);
 }
@@ -2314,7 +2429,7 @@ defineExpose({
   font-size: 12px;
   font-weight: 400;
   padding: 7px 10px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   white-space: normal;
   word-break: break-all;
 }
@@ -2360,7 +2475,7 @@ defineExpose({
   justify-content: center;
   background: var(--surface);
   border: 1px solid var(--border-soft);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   color: var(--text-muted);
   cursor: pointer;
   font-size: 11px;
@@ -2409,7 +2524,7 @@ defineExpose({
   min-width: 200px;
   padding: 5px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   font-size: 13px;
   background: var(--surface);
   color: var(--text);
@@ -2438,7 +2553,7 @@ defineExpose({
   font-weight: 600;
   color: #fff;
   background: var(--warning);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   padding: 1px 9px;
 }
 

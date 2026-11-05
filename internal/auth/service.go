@@ -3,7 +3,6 @@ package auth
 import (
 	"log/slog"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"litepan/internal/domain"
@@ -27,8 +26,6 @@ type Service struct {
 	managed   map[int64]struct{}
 	recalc    chan struct{}
 	firstLoop bool
-
-	schedulerLoop atomic.Bool
 
 	recalcReasonMu sync.Mutex
 	recalcReason   string
@@ -98,10 +95,6 @@ func (s *Service) takeRecalcReason() string {
 	r := s.recalcReason
 	s.recalcReason = ""
 	return r
-}
-
-func (s *Service) setSchedulerLoop(active bool) {
-	s.schedulerLoop.Store(active)
 }
 
 func (s *Service) wake() {

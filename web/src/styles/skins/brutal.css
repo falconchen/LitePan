@@ -29,17 +29,9 @@
   border-bottom: var(--brutal-bw) solid var(--brutal-ink);
 }
 
-/* ===== 仪表盘：限定 .dashboard-page，不用硬阴影，避免撑出滚动条与 Chrome 边缘露色 ===== */
-:root[data-skin="brutal"] .dashboard-page .dashboard-hero,
-:root[data-skin="brutal"] .dashboard-page .overview-card,
 :root[data-skin="brutal"] .dashboard-page .dashboard-panel {
   border: var(--brutal-bw) solid var(--brutal-ink);
   box-shadow: none;
-}
-
-:root[data-skin="brutal"] .dashboard-page .dashboard-hero,
-:root[data-skin="brutal"] .dashboard-page .overview-card {
-  background: var(--surface);
 }
 
 :root[data-skin="brutal"] .card-action-btn {
@@ -88,13 +80,6 @@
 }
 
 /* ===== 跨盘秒传：限定 .cross-transfer，不用大偏移阴影，避免布局与边缘露色 ===== */
-:root[data-skin="brutal"] .cross-transfer {
-  --fc-pill-bg: var(--brutal-blue);
-  --fc-pill-fg: var(--brutal-ink);
-  --fc-pill-md5-bg: var(--brutal-yellow);
-  --fc-pill-md5-fg: var(--brutal-ink);
-}
-
 :root[data-skin="brutal"] .cross-transfer .flow-card,
 :root[data-skin="brutal"] .cross-transfer .transfer-shell,
 :root[data-skin="brutal"] .cross-transfer .ct-footer,
@@ -116,7 +101,6 @@
   box-shadow: none;
 }
 
-:root[data-skin="brutal"] .cross-transfer .fc-slot,
 :root[data-skin="brutal"] .cross-transfer .transfer-topbar,
 :root[data-skin="brutal"] .cross-transfer .panel-pick,
 :root[data-skin="brutal"] .cross-transfer .panel.src {
@@ -128,11 +112,7 @@
   border-bottom-width: var(--brutal-bw);
 }
 
-:root[data-skin="brutal"] .cross-transfer .fc-logo img,
-:root[data-skin="brutal"] .cross-transfer .fc-logo.placeholder,
 :root[data-skin="brutal"] .cross-transfer .logo-chip img,
-:root[data-skin="brutal"] .cross-transfer .fc-pill,
-:root[data-skin="brutal"] .cross-transfer .biflag,
 :root[data-skin="brutal"] .cross-transfer .panel-role,
 :root[data-skin="brutal"] .cross-transfer .tb-flow,
 :root[data-skin="brutal"] .cross-transfer .tb-swap,
@@ -151,8 +131,7 @@
   border-radius: 0;
 }
 
-:root[data-skin="brutal"] .cross-transfer .panel-role,
-:root[data-skin="brutal"] .cross-transfer .biflag {
+:root[data-skin="brutal"] .cross-transfer .panel-role {
   border: 1px solid var(--brutal-ink);
   font-weight: 800;
 }
@@ -490,37 +469,10 @@
   color: var(--brutal-ink);
 }
 :root[data-skin="brutal"] .tabbar__tab--active,
-:root[data-skin="brutal"] .tabbar__tab--active:hover,
-:root[data-skin="brutal"] .upload-task-tab.active {
+:root[data-skin="brutal"] .tabbar__tab--active:hover {
   background: var(--brutal-ink);
   color: var(--brutal-yellow);
   border-color: var(--brutal-ink);
-}
-
-/* ===== 任务页第四张设置入口卡：与 StatCard 一致，仅硬阴影、无描边 ===== */
-:root[data-skin="brutal"] .settings-entry-card {
-  border: none;
-  border-radius: 0;
-  box-shadow: var(--shadow-card);
-  background: var(--surface);
-}
-
-:root[data-skin="brutal"] .settings-entry-card:hover {
-  background: var(--brutal-yellow);
-  border: none;
-  box-shadow: var(--shadow-card);
-}
-
-:root[data-skin="brutal"] .settings-entry-card__icon {
-  border-radius: 0;
-  border: none;
-  background: linear-gradient(135deg, var(--brand-start), var(--brand-end));
-  color: #fff;
-}
-
-:root[data-skin="brutal"] .settings-entry-card__hint-action {
-  color: var(--brutal-ink);
-  font-weight: 800;
 }
 
 /* ===== 首页文件表格：表格容器不使用硬阴影，工具栏只保留下边线，避免双框错位 ===== */
@@ -539,24 +491,8 @@
 
 /* ===== 上传任务面板：面板内按钮全部直角 ===== */
 :root[data-skin="brutal"] .upload-task-panel .icon-btn,
-:root[data-skin="brutal"] .upload-task-panel .task-toolbar-btn,
-:root[data-skin="brutal"] .upload-task-panel .upload-task-tab,
-:root[data-skin="brutal"] .upload-task-panel .upload-task-nav-item,
-:root[data-skin="brutal"] .upload-task-panel .upload-task-nav-badge,
-:root[data-skin="brutal"] .upload-task-panel .task-chip,
-:root[data-skin="brutal"] .upload-task-panel .task-phase-pill {
+:root[data-skin="brutal"] .upload-task-panel .task-chip {
   border-radius: 0;
-}
-
-:root[data-skin="brutal"] .upload-task-panel .task-toolbar-btn {
-  border: var(--brutal-bw) solid var(--brutal-ink);
-  box-shadow: 3px 3px 0 var(--brutal-ink);
-}
-
-:root[data-skin="brutal"] .upload-task-panel .task-toolbar-btn:hover:not(:disabled) {
-  background: #fff;
-  transform: none;
-  box-shadow: 3px 3px 0 var(--brutal-ink);
 }
 
 /* ===== 离线下载弹窗：沿用野兽派直角、粗边和高对比提示块 ===== */
@@ -564,7 +500,6 @@
 :root[data-skin="brutal"] .offline-capability__icon,
 :root[data-skin="brutal"] .offline-textarea,
 :root[data-skin="brutal"] .offline-torrent-drop,
-:root[data-skin="brutal"] .offline-torrent-summary,
 :root[data-skin="brutal"] .offline-torrent-files,
 :root[data-skin="brutal"] .offline-target {
   border-radius: 0;

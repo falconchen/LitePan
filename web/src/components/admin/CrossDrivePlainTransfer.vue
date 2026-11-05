@@ -2,13 +2,13 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { accountsApi } from "@/api/accounts";
 import type { Account } from "@/api/types";
-import { enqueueCrossTransferPlain, type CrossTransferPlainEnqueueResult } from "@/api/crossTransfer";
+import { enqueueCrossTransferPlainStream, type CrossTransferPlainEnqueueResult } from "@/api/crossTransfer";
 import type { FolderSelection } from "@/components/file/FolderSelector.vue";
 import { getApiErrorMessage } from "@/api/client";
 import { toast } from "@/composables/useToast";
 import FolderPickerModal from "@/components/file/FolderPickerModal.vue";
-import BusySpinner from "@/components/base/BusySpinner.vue";
 import "@/styles/cross-transfer.css";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 /**
  * 跨盘普传：不探测指纹、不尝试秒传，直接「源盘下载到服务器临时目录 → 上传目标盘」。
@@ -39,7 +39,28 @@ const src = ref<{ accId: number; accName: string; accDriverType: string; sources
 const dst = ref<DstSel | null>(null);
 const conflict = ref<Conflict>("skip");
 const running = ref(false);
-const phaseText = ref("");
+const result = ref<CrossTransferPlainEnqueueResult | null>(null);
+const enqueueProgress = ref({ stage: "", directories: 0, files: 0, total: 0, processed: 0, enqueued: 0, skipped: 0, failed: 0 });
+const enqueuePercent = computed(() => enqueueProgress.value.total > 0
+  ? Math.min(100, Math.round((enqueueProgress.value.processed * 100) / enqueueProgress.value.total))
+  : 0);
+const plainMetrics = computed(() => {
+  if (result.value) {
+    return {
+      files: result.value.enqueued + result.value.skipped + result.value.failed,
+      enqueued: result.value.enqueued,
+      skipped: result.value.skipped,
+      failed: result.value.failed,
+    };
+  }
+  return {
+    files: enqueueProgress.value.total || enqueueProgress.value.files,
+    enqueued: enqueueProgress.value.enqueued,
+    skipped: enqueueProgress.value.skipped,
+    failed: enqueueProgress.value.failed,
+  };
+});
+const tasksHref = "/?taskPanel=relay";
 
 const pickerOpen = ref(false);
 const pickerMode = ref<"src" | "dst">("src");
@@ -183,9 +204,11 @@ const canStart = computed(() => {
 async function startTransfer() {
   if (!canStart.value || !src.value || !dst.value) return;
   running.value = true;
-  phaseText.value = "正在枚举源目录并创建任务…";
+  result.value = null;
+  enqueueProgress.value = { stage: "scan", directories: 0, files: 0, total: 0, processed: 0, enqueued: 0, skipped: 0, failed: 0 };
   try {
-    const res: CrossTransferPlainEnqueueResult = await enqueueCrossTransferPlain({
+    let res: CrossTransferPlainEnqueueResult | null = null;
+    for await (const message of enqueueCrossTransferPlainStream({
       source_account_id: src.value.accId,
       source_account_name: src.value.accName,
       source_driver_type: src.value.accDriverType,
@@ -200,7 +223,17 @@ async function startTransfer() {
         ancestor_ids: item.ancestorIds,
       })),
       conflict: conflict.value,
-    });
+    })) {
+      if (message.event === "progress") {
+        Object.assign(enqueueProgress.value, message);
+      } else if (message.event === "end") {
+        res = message.result as CrossTransferPlainEnqueueResult;
+      } else if (message.event === "error") {
+        throw new Error(String(message.message || "创建跨盘普传任务失败"));
+      }
+    }
+    if (!res) throw new Error("创建任务未返回结果");
+    result.value = res;
     const parts = [
       res.enqueued > 0 ? `已入队 ${res.enqueued} 个任务` : "",
       res.skipped > 0 ? `跳过 ${res.skipped} 个同名` : "",
@@ -220,7 +253,6 @@ async function startTransfer() {
     toast.error(getApiErrorMessage(e, "创建跨盘普传任务失败"));
   } finally {
     running.value = false;
-    phaseText.value = "";
   }
 }
 </script>
@@ -231,7 +263,7 @@ async function startTransfer() {
       <!-- 顶部：源 / 目标 名称条 -->
       <div class="transfer-topbar">
         <div class="tb-side tb-src">
-          <span class="logo-chip s26"><i class="fas fa-hdd"></i></span>
+          <span class="logo-chip s26"><SvgIcon name="hdd" size="1em" /></span>
           <div class="tb-title">
             <span>{{ src?.accName || "源网盘" }}</span>
             <small>下载到服务器临时目录</small>
@@ -240,7 +272,7 @@ async function startTransfer() {
         </div>
         <div class="tb-mid">
           <button type="button" class="tb-swap" title="交换来源与目标" @click="swapSides">
-            <i class="fas fa-right-left"></i>
+            <SvgIcon name="right-left" size="1em" />
           </button>
           <span class="tb-swap-hint">可交换</span>
         </div>
@@ -250,7 +282,7 @@ async function startTransfer() {
             <span>{{ dst?.accName || "目标网盘" }}</span>
             <small>由服务器中转上传</small>
           </div>
-          <span class="logo-chip s26"><i class="fas fa-upload"></i></span>
+          <span class="logo-chip s26"><SvgIcon name="upload" size="1em" /></span>
         </div>
       </div>
 
@@ -259,18 +291,18 @@ async function startTransfer() {
         <div class="panel src">
           <div class="panel-pick">
             <button class="combo" @click="openPicker('src')">
-              <span class="c-ic"><i class="fas fa-hdd"></i></span>
+              <span class="c-ic"><SvgIcon name="hdd" size="1em" /></span>
               <span class="c-text" :class="{ placeholder: !src }">{{ srcLabel }}</span>
-              <span class="c-caret"><i class="fas fa-chevron-down"></i></span>
+              <span class="c-caret"><SvgIcon name="chevron-down" size="1em" /></span>
             </button>
           </div>
           <div class="tree tree-host">
             <div v-if="src?.sources?.length" class="src-selected">
               <div v-for="(item, i) in src.sources" :key="i" class="src-item">
-                <i class="fas fa-folder"></i>
+                <SvgIcon name="folder" size="1em" />
                 <span class="src-item-path" :title="item.path">{{ item.path || "/" }}</span>
               </div>
-              <p class="src-tip"><i class="fas fa-circle-info"></i> 将保留目录结构、包含全部子目录与文件</p>
+              <p class="src-tip"><SvgIcon name="circle-info" size="1em" /> 将保留目录结构、包含全部子目录与文件</p>
             </div>
             <div v-else class="tree-empty">选择源目录后，将按目录整树传输，不探测秒传指纹</div>
           </div>
@@ -279,15 +311,15 @@ async function startTransfer() {
         <div class="panel dst">
           <div class="panel-pick">
             <button class="combo" @click="openPicker('dst')">
-              <span class="c-ic"><i class="fas fa-hdd"></i></span>
+              <span class="c-ic"><SvgIcon name="hdd" size="1em" /></span>
               <span class="c-text" :class="{ placeholder: !dst }">{{ dstLabel }}</span>
-              <span class="c-caret"><i class="fas fa-chevron-down"></i></span>
+              <span class="c-caret"><SvgIcon name="chevron-down" size="1em" /></span>
             </button>
           </div>
           <div class="tree">
             <div v-if="dst" class="src-selected">
-              <div class="src-item"><i class="fas fa-folder"></i><span class="src-item-path" :title="dst.path">{{ dst.path || "/" }}</span></div>
-              <p class="src-tip"><i class="fas fa-circle-info"></i> 上传前会自动创建缺失的目标子目录</p>
+              <div class="src-item"><SvgIcon name="folder" size="1em" /><span class="src-item-path" :title="dst.path">{{ dst.path || "/" }}</span></div>
+              <p class="src-tip"><SvgIcon name="circle-info" size="1em" /> 上传前会自动创建缺失的目标子目录</p>
             </div>
             <div v-else class="tree-empty">选择目标目录，媒体上传后在此目录下按来源结构存放</div>
           </div>
@@ -297,15 +329,33 @@ async function startTransfer() {
 
     <!-- 底部操作：状态 + 设置齿轮 + 开始按钮 -->
     <div class="ct-plain-footer">
-      <div class="ft-left">
-        <span v-if="running" class="ft-running">
-          <BusySpinner :size="16" color="var(--brand)" />
-          {{ phaseText }}
-        </span>
-        <span v-else-if="srcCount" class="ft-ready">
-          <i class="fas fa-circle-check"></i> 已选 {{ srcCount }} 个源目录，共传输其中全部文件
-        </span>
-        <span v-else class="ft-ready muted"><i class="fas fa-circle-info"></i> 先选择源目录与目标目录</span>
+      <div class="plain-status-group">
+        <div class="plain-stats">
+          <span class="plain-stat"><b>{{ plainMetrics.files }}</b><small>文件</small></span>
+          <i></i>
+          <span class="plain-stat"><b class="ok">{{ plainMetrics.enqueued }}</b><small>加入</small></span>
+          <i></i>
+          <span class="plain-stat"><b>{{ plainMetrics.skipped }}</b><small>跳过</small></span>
+          <i></i>
+          <span class="plain-stat"><b class="fail">{{ plainMetrics.failed }}</b><small>失败</small></span>
+        </div>
+        <div v-if="running || result" class="plain-progress">
+          <template v-if="running">
+            <div class="plain-progress-main">
+              <div class="plain-progress-track" :class="{ 'is-loading': enqueueProgress.stage === 'scan' }">
+                <i :style="enqueueProgress.stage === 'enqueue' ? { width: `${enqueuePercent}%` } : undefined"></i>
+              </div>
+              <strong v-if="enqueueProgress.stage === 'enqueue'">{{ enqueuePercent }}%</strong>
+            </div>
+            <span v-if="enqueueProgress.stage === 'enqueue'">已处理 {{ enqueueProgress.processed }}/{{ enqueueProgress.total }}</span>
+            <span v-else>已扫描 {{ enqueueProgress.directories }} 个目录 · 发现 {{ enqueueProgress.files }} 个文件</span>
+          </template>
+          <template v-else>
+            <a class="plain-task-link" :href="tasksHref" target="_blank" rel="noopener">
+              查看传输任务 <SvgIcon name="arrow-up-right-from-square" size="1em" />
+            </a>
+          </template>
+        </div>
       </div>
       <div class="footer-island">
         <div ref="settingsMenuRef" class="ct-settings-menu">
@@ -316,7 +366,7 @@ async function startTransfer() {
             :aria-expanded="settingsOpen"
             @click="toggleSettings"
           >
-            <i class="fas fa-sliders"></i>
+            <SvgIcon name="sliders" size="1em" />
           </button>
           <div v-if="settingsOpen" class="ct-settings-dropdown ct-settings-pop">
             <div class="ct-settings-panel">
@@ -348,7 +398,7 @@ async function startTransfer() {
           </div>
         </div>
         <button class="ct-btn ct-btn-go" :disabled="!canStart" @click="startTransfer">
-          <i :class="running ? 'fas fa-spinner fa-spin' : 'fas fa-cloud-arrow-down'"></i>
+          <SvgIcon :name="running ? 'spinner' : 'cloud-arrow-down'" size="1em" :class="{ spin: running }" />
           {{ running ? "正在入队…" : "开始传输" }}
         </button>
       </div>
@@ -403,7 +453,7 @@ async function startTransfer() {
 /* 已选目录展示（树区域内） */
 .src-selected { display: flex; flex-direction: column; gap: 4px; }
 .src-item { display: flex; align-items: center; gap: 8px; padding: 5px 8px; font-size: 13px; }
-.src-item > i { color: #f59e0b; }
+.src-item > i, .src-item > .lp-svg-icon { color: #f59e0b; }
 .src-item-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .src-tip { margin-top: 8px; font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
 
@@ -420,8 +470,27 @@ async function startTransfer() {
   box-shadow: var(--shadow-soft);
   padding: 10px 14px;
 }
-.ft-left { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-regular); }
-.ft-ready i { color: var(--success); }
-.ft-ready.muted i { color: var(--text-secondary); }
-.ft-running { display: flex; align-items: center; gap: 8px; color: var(--text-regular); }
+.plain-status-group { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-start; gap: 14px; }
+.plain-stats { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.plain-stats > i { width: 2px; height: 2px; border-radius: 50%; background: var(--border2); }
+.plain-stat { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+.plain-stat b { color: var(--text-main); font-size: 22px; line-height: 1; font-variant-numeric: tabular-nums; }
+.plain-stat b.ok { color: var(--success); }
+.plain-stat b.fail { color: var(--danger); }
+.plain-stat small { color: var(--text-secondary); font-size: 11px; }
+.plain-progress { flex: 1 1 320px; min-width: 240px; display: flex; align-items: center; justify-content: flex-start; gap: 10px; color: var(--text-secondary); font-size: 12px; white-space: nowrap; }
+.plain-progress-main { flex: 1 1 auto; min-width: 180px; display: flex; align-items: center; gap: 8px; }
+.plain-progress-main strong { width: 34px; color: var(--brand); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+.plain-progress-track { flex: 1 1 auto; min-width: 140px; height: 3px; overflow: hidden; border-radius: var(--radius-pill); background: var(--bg); }
+.plain-progress-track > i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--brand), var(--brand-end)); transition: width .2s ease; }
+.plain-progress-track.is-loading > i { width: 35%; animation: plain-progress-loading 1.1s ease-in-out infinite; }
+.plain-task-link { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--brand) 20%, transparent); border-radius: var(--radius-md); background: color-mix(in srgb, var(--brand) 6%, transparent); color: var(--brand); text-decoration: none; transition: background .15s, border-color .15s; }
+.plain-task-link:hover { border-color: color-mix(in srgb, var(--brand) 36%, transparent); background: color-mix(in srgb, var(--brand) 10%, transparent); }
+.plain-task-link i, .plain-task-link .lp-svg-icon { font-size: 10px; }
+@keyframes plain-progress-loading { from { transform: translateX(-110%); } to { transform: translateX(310%); } }
+
+@media (max-width: 720px) {
+  .plain-status-group { flex-wrap: wrap; gap: 8px 12px; }
+  .plain-progress { flex-basis: 100%; min-width: 0; overflow-x: auto; }
+}
 </style>

@@ -68,11 +68,11 @@ function resolve(payload: { selections?: FolderSelection[] } = {}) {
       <header class="scrape-scope-picker__header">
         <h3>刮削范围</h3>
         <label class="scrape-scope-picker__search">
-          <SvgIcon name="search" :size="15" />
+          <SvgIcon name="badge-search" :size="16" />
           <input v-model="searchValue" type="search" placeholder="筛选当前目录文件夹" />
           <button v-if="searchValue" type="button" aria-label="清空筛选" @click="searchValue = ''">×</button>
         </label>
-        <button type="button" aria-label="关闭" @click="emit('close')">×</button>
+        <button type="button" aria-label="关闭" @click="emit('close')"><SvgIcon name="xmark" :size="14" /></button>
       </header>
 
       <FolderSelector

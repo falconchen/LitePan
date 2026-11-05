@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import "media-chrome";
 import "media-chrome/dist/lang/zh-CN.js";
 import { setLanguage } from "media-chrome/dist/utils/i18n.js";
-import "@fortawesome/fontawesome-free/css/all.min.css";
 import { filesApi } from "@/api/files";
 import type { FileItem } from "@/api/types";
 import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
@@ -12,6 +11,8 @@ import { fileExtension } from "@/utils/format";
 import { decodeTextBytes } from "@/utils/textEncoding";
 import PreviewHeader from "./PreviewHeader.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
 
 const props = defineProps<{
   accountId: number;
@@ -472,20 +473,26 @@ onUnmounted(() => {
             </Transition>
 
             <div v-if="mediaLoading && !mediaError" class="video-preview__loading" aria-label="正在加载视频">
-              <BusySpinner :size="19" color="#1687ff" />
+              <BusySpinner :size="18" color="#1687ff" />
               <b>正在加载视频…</b>
             </div>
 
-            <div v-if="mediaError" class="video-preview__error" role="alert">
-              <i class="fa-solid fa-circle-exclamation" aria-hidden="true" />
-              <strong>浏览器无法直接播放这个视频</strong>
-              <span>可能是视频封装或编码格式不受当前浏览器支持，可下载后使用本地播放器打开。</span>
-              <button type="button" @click="downloadCurrent">下载视频</button>
-            </div>
+            <PreviewState
+              v-if="mediaError"
+              class="video-preview__error"
+              icon="circle-exclamation"
+              tone="warn"
+              title="浏览器无法直接播放这个视频"
+              message="可能是视频封装或编码格式不受当前浏览器支持，可下载后使用本地播放器打开。"
+            >
+              <template #actions>
+                <button type="button" @click="downloadCurrent">下载视频</button>
+              </template>
+            </PreviewState>
 
             <div v-if="queueVisible && episodes.length > 1" class="video-preview__queue">
               <button type="button" class="video-preview__queue-arrow" aria-label="向左查看选集" @click="scrollEpisodeList(-1)">
-                <i class="fa-solid fa-chevron-left" aria-hidden="true" />
+                <SvgIcon name="chevron-left" size="1em" />
               </button>
               <div ref="episodeListRef" class="video-preview__episodes">
                 <button
@@ -514,7 +521,7 @@ onUnmounted(() => {
                 </button>
               </div>
               <button type="button" class="video-preview__queue-arrow" aria-label="向右查看选集" @click="scrollEpisodeList(1)">
-                <i class="fa-solid fa-chevron-right" aria-hidden="true" />
+                <SvgIcon name="chevron-right" size="1em" />
               </button>
             </div>
 
@@ -538,9 +545,9 @@ onUnmounted(() => {
                   title="选择字幕"
                   @click="subtitleMenuOpen = !subtitleMenuOpen"
                 >
-                  <i class="fa-regular fa-closed-captioning" aria-hidden="true" />
+                  <SvgIcon name="closed-captioning-regular" size="1em" />
                   <span>{{ selectedSubtitleLabel }}</span>
-                  <i class="fa-solid fa-chevron-up video-preview__subtitle-chevron" aria-hidden="true" />
+                  <SvgIcon name="chevron-up" size="1em" class="video-preview__subtitle-chevron" />
                 </button>
 
                 <Transition name="subtitle-menu">
@@ -558,7 +565,7 @@ onUnmounted(() => {
                       @click="selectSubtitle('')"
                     >
                       <span>关闭字幕</span>
-                      <i v-if="!selectedSubtitleId" class="fa-solid fa-check" aria-hidden="true" />
+                      <SvgIcon name="check" size="1em" v-if="!selectedSubtitleId" />
                     </button>
                     <button
                       v-for="subtitle in subtitleCandidates"
@@ -572,7 +579,7 @@ onUnmounted(() => {
                     >
                       <span>{{ subtitle.label }}</span>
                       <small>{{ subtitle.format.toUpperCase() }}</small>
-                      <i v-if="selectedSubtitleId === subtitle.file.id" class="fa-solid fa-check" aria-hidden="true" />
+                      <SvgIcon name="check" size="1em" v-if="selectedSubtitleId === subtitle.file.id" />
                     </button>
                   </div>
                 </Transition>
@@ -585,7 +592,7 @@ onUnmounted(() => {
                 :aria-label="queueVisible ? '收起选集' : '展开选集'"
                 @click="queueVisible = !queueVisible"
               >
-                <i class="fa-solid fa-list-ul" aria-hidden="true" />
+                <SvgIcon name="list-ul" size="1em" />
               </button>
               <media-playback-rate-button rates="0.5 0.75 1 1.25 1.5 2" />
               <media-fullscreen-button aria-label="全屏" />
@@ -625,7 +632,7 @@ onUnmounted(() => {
   overflow: hidden;
   color: #c9d7e9;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   outline: none;
   background: transparent;
   font: inherit;
@@ -648,7 +655,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.video-preview__subtitle-button > .fa-closed-captioning { color: #2695ff; font-size: 17px; }
+.video-preview__subtitle-button > .lp-svg-icon { color: #2695ff; font-size: 17px; }
 .video-preview__subtitle-chevron { color: #7f91a9; font-size: 8px; transition: transform 150ms ease; }
 .video-preview__subtitle-button[aria-expanded="false"] .video-preview__subtitle-chevron { transform: rotate(180deg); }
 
@@ -664,7 +671,7 @@ onUnmounted(() => {
   overflow: hidden;
   color: #eaf3ff;
   border: 1px solid rgb(89 151 224 / 26%);
-  border-radius: 11px;
+  border-radius: var(--radius-md);
   background: rgb(6 17 34 / 96%);
   box-shadow: 0 16px 40px rgb(0 0 0 / 48%), 0 0 0 1px rgb(0 0 0 / 22%);
   backdrop-filter: blur(18px);
@@ -693,7 +700,7 @@ onUnmounted(() => {
   color: #9fb0c6;
   text-align: left;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   outline: none;
   background: transparent;
   font: inherit;
@@ -706,7 +713,7 @@ onUnmounted(() => {
 .video-preview__subtitle-option.is-selected { color: #fff; background: linear-gradient(90deg, rgb(22 126 229 / 42%), rgb(22 126 229 / 18%)); }
 .video-preview__subtitle-option small { color: #70849e; font-size: 9px; font-weight: 650; letter-spacing: 0.04em; }
 .video-preview__subtitle-option.is-selected small { color: #88c8ff; }
-.video-preview__subtitle-option .fa-check { grid-column: 3; color: #45a9ff; font-size: 10px; }
+.video-preview__subtitle-option .lp-svg-icon { grid-column: 3; color: #45a9ff; font-size: 10px; }
 .subtitle-menu-enter-active,
 .subtitle-menu-leave-active { transition: opacity 130ms ease, transform 130ms ease; transform-origin: right bottom; }
 .subtitle-menu-enter-from,
@@ -752,7 +759,7 @@ onUnmounted(() => {
   transform: translateX(-50%);
   padding: 9px 14px;
   border: 1px solid rgb(255 255 255 / 18%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: rgb(3 11 25 / 85%);
   box-shadow: 0 12px 38px rgb(0 0 0 / 32%);
   font-size: 13px;
@@ -766,15 +773,9 @@ onUnmounted(() => {
 .video-preview__loading,
 .video-preview__error {
   position: fixed;
-  left: 50%;
   top: 48%;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  gap: 10px;
   padding: 13px 17px;
   border: 1px solid rgb(255 255 255 / 15%);
-  border-radius: 10px;
   background: rgb(3 11 25 / 88%);
   box-shadow: 0 18px 55px rgb(0 0 0 / 36%);
 }
@@ -787,14 +788,12 @@ onUnmounted(() => {
   padding: 24px;
 }
 
-.video-preview__error > i { color: #ffb45e; font-size: 30px; }
 .video-preview__error strong { font-size: 17px; }
-.video-preview__error span { color: #9eb0c8; font-size: 13px; line-height: 1.7; }
 .video-preview__error button {
   margin-top: 4px;
   padding: 9px 18px;
   border: 1px solid #268bff;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: #187ce0;
   font-weight: 650;
 }
@@ -807,7 +806,7 @@ onUnmounted(() => {
   margin-bottom: 15px;
 }
 
-.video-preview__queue-arrow { border-radius: 9px; font-size: 22px; opacity: 0.88; }
+.video-preview__queue-arrow { border-radius: var(--radius-sm); font-size: 22px; opacity: 0.88; }
 .video-preview__queue-arrow:hover { color: #3f9dff; background: rgb(255 255 255 / 7%); }
 .video-preview__episodes { display: flex; gap: 10px; overflow-x: auto; scrollbar-width: none; }
 .video-preview__episodes::-webkit-scrollbar { display: none; }
@@ -825,7 +824,7 @@ onUnmounted(() => {
   overflow: hidden;
   text-align: left;
   border: 1px solid rgb(139 169 213 / 24%);
-  border-radius: 9px;
+  border-radius: var(--radius-sm);
   background: rgb(10 22 41 / 64%);
   backdrop-filter: blur(12px);
   transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
@@ -846,7 +845,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 4px;
   padding: 3px 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   color: #cbe6ff;
   background: #187ce0;
   font-size: 9px;
@@ -904,7 +903,7 @@ onUnmounted(() => {
   --media-range-bar-color: #1687ff;
 }
 .video-preview__controls media-volume-range { --media-range-track-height: 4px; }
-.video-preview__queue-toggle { width: 42px; height: 42px; border-radius: 8px; color: #cfdaea; font-size: 17px; }
+.video-preview__queue-toggle { width: 42px; height: 42px; border-radius: var(--radius-sm); color: #cfdaea; font-size: 17px; }
 .video-preview__queue-toggle.is-active { color: #2794ff; }
 
 .video-preview__shortcuts {

@@ -17,6 +17,7 @@ import (
 	"litepan/internal/playback"
 	"litepan/internal/settings"
 	"litepan/internal/startupwait"
+	"litepan/pkg/safego"
 )
 
 const defaultScanIntervalMinutes = 6 * 60
@@ -48,8 +49,11 @@ type Service struct {
 	taskCancels              map[int64]context.CancelFunc
 	dirtyAccounts            map[int64]bool
 	pendingRun               map[int64]string
+	waitingRuns              map[int64]queuedRun
+	nextRunOrder             uint64
 	scanProgress             map[int64]liveScanProgress
 	fileOperations           map[int64]struct{}
+	internalMutationUntil    map[int64]time.Time
 	organizeBusy             RunningAccountLister
 	retentionBusy            RunningAccountLister
 	automationManagedChecker func(context.Context, int64) (bool, error)
@@ -85,24 +89,26 @@ func NewService(opts ServiceOptions) *Service {
 		strmDir = filepath.Join(filepath.Dir(filepath.Clean(opts.DataDir)), "strm")
 	}
 	return &Service{
-		repo:            opts.Repo,
-		branches:        opts.Branches,
-		dirCache:        opts.DirCache,
-		files:           opts.Files,
-		playback:        opts.Playback,
-		settings:        opts.Settings,
-		dataDir:         opts.DataDir,
-		strmDir:         strmDir,
-		listenAddr:      opts.ListenAddr,
-		secret:          opts.Secret,
-		bus:             opts.Bus,
-		log:             log,
-		running:         make(map[int64]bool),
-		runningAccounts: make(map[int64]struct{}),
-		taskCancels:     make(map[int64]context.CancelFunc),
-		dirtyAccounts:   make(map[int64]bool),
-		pendingRun:      make(map[int64]string),
-		fileOperations:  make(map[int64]struct{}),
+		repo:                  opts.Repo,
+		branches:              opts.Branches,
+		dirCache:              opts.DirCache,
+		files:                 opts.Files,
+		playback:              opts.Playback,
+		settings:              opts.Settings,
+		dataDir:               opts.DataDir,
+		strmDir:               strmDir,
+		listenAddr:            opts.ListenAddr,
+		secret:                opts.Secret,
+		bus:                   opts.Bus,
+		log:                   log,
+		running:               make(map[int64]bool),
+		runningAccounts:       make(map[int64]struct{}),
+		taskCancels:           make(map[int64]context.CancelFunc),
+		dirtyAccounts:         make(map[int64]bool),
+		pendingRun:            make(map[int64]string),
+		waitingRuns:           make(map[int64]queuedRun),
+		fileOperations:        make(map[int64]struct{}),
+		internalMutationUntil: make(map[int64]time.Time),
 	}
 }
 
@@ -161,9 +167,17 @@ func (s *Service) TryBeginTaskFileOperation(taskID int64) (func(), bool) {
 		once.Do(func() {
 			s.mu.Lock()
 			delete(s.fileOperations, taskID)
+			s.markInternalMutationLocked(taskID)
 			s.mu.Unlock()
 		})
 	}, true
+}
+
+func (s *Service) markInternalMutationLocked(taskID int64) {
+	if s.internalMutationUntil == nil {
+		s.internalMutationUntil = make(map[int64]time.Time)
+	}
+	s.internalMutationUntil[taskID] = time.Now().Add(5 * time.Second)
 }
 
 func (s *Service) SetAutomationManagedChecker(checker func(context.Context, int64) (bool, error)) {
@@ -281,15 +295,17 @@ func (s *Service) Start(ctx context.Context) {
 		if !s.awaitStartup(ctx) {
 			return
 		}
+		// 兜住单轮崩溃：一轮调度出错只跳过这一轮，不能让整个服务下线。
+		runOnce := func() { safego.Guard(s.log, "strm.schedule", func() { s.scheduleOnce(ctx) }) }
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		s.scheduleOnce(ctx)
+		runOnce()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.scheduleOnce(ctx)
+				runOnce()
 			}
 		}
 	}()
@@ -449,12 +465,14 @@ func (s *Service) RunTaskNow(ctx context.Context, id int64, runMode string) (*do
 	if rem := s.StartupRemaining(); rem > 0 {
 		s.mu.Lock()
 		s.pendingRun[id] = runMode
+		s.enqueueRunLocked(task)
 		s.dirtyAccounts[task.AccountID] = true
 		s.mu.Unlock()
 		return nil, domain.Errorf(domain.CodeValidation, "已加入执行队列，启动退避结束后（约 %d 秒）自动执行", rem)
 	}
 	s.mu.Lock()
 	s.pendingRun[id] = runMode
+	s.enqueueRunLocked(task)
 	s.mu.Unlock()
 	s.runTaskAsync(task)
 	return task, nil
@@ -521,14 +539,14 @@ func (s *Service) ReplaceBaseURL(ctx context.Context, newBaseURL string) (Replac
 
 func (s *Service) PrecheckAccountRepair(ctx context.Context, in AccountRepairPrecheckInput) (AccountRepairPrecheckResult, error) {
 	if s == nil {
-		return AccountRepairPrecheckResult{}, domain.Errorf(domain.CodeInternal, "strm service unavailable")
+		return AccountRepairPrecheckResult{}, domain.Errorf(domain.CodeInternal, "STRM 服务不可用")
 	}
 	return PrecheckAccountRepair(ctx, s.files, s.strmDir, in)
 }
 
 func (s *Service) RepairAccountReferences(ctx context.Context, in AccountRepairInput) (AccountRepairResult, error) {
 	if s == nil {
-		return AccountRepairResult{}, domain.Errorf(domain.CodeInternal, "strm service unavailable")
+		return AccountRepairResult{}, domain.Errorf(domain.CodeInternal, "STRM 服务不可用")
 	}
 	token, err := s.ensureToken(ctx)
 	if err != nil {
@@ -677,6 +695,17 @@ func (s *Service) scanSettings() ScanSettings {
 	}
 }
 
+// IsTaskMediaFile 使用与 STRM 扫描完全相同的扩展名规则判断媒体文件。
+func (s *Service) IsTaskMediaFile(task *domain.StrmTask, name string) bool {
+	if task == nil {
+		return false
+	}
+	rules := newScanRules(task, s.scanSettings())
+	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
+	_, ok := rules.mediaExts[ext]
+	return ok
+}
+
 func (s *Service) ListBranches(ctx context.Context, taskID int64) ([]*domain.StrmBranch, error) {
 	if s.branches == nil {
 		return nil, nil
@@ -693,7 +722,7 @@ type BranchPatch struct {
 	Status        *string
 }
 
-func (s *Service) CreateBranch(ctx context.Context, branch *domain.StrmBranch) (*domain.StrmBranch, error) {
+func (s *Service) CreateBranch(ctx context.Context, branch *domain.StrmBranch, relativeDirs []string) (*domain.StrmBranch, error) {
 	if s.branches == nil {
 		return nil, domain.Errf(domain.CodeNotImplement)
 	}
@@ -702,7 +731,7 @@ func (s *Service) CreateBranch(ctx context.Context, branch *domain.StrmBranch) (
 		return nil, err
 	}
 	branch.AccountID = task.AccountID
-	branch.RelativePath = branchRelativePath(task.Path, branch.Path)
+	branch.RelativePath = resolveBranchRelativePath(task.Path, branch.Path, relativeDirs)
 	if branch.BranchType == "" {
 		branch.BranchType = domain.StrmBranchTypeTemporary
 	}
@@ -726,7 +755,7 @@ func (s *Service) CreateBranch(ctx context.Context, branch *domain.StrmBranch) (
 	return s.branches.Get(ctx, id)
 }
 
-func (s *Service) UpdateBranch(ctx context.Context, taskID, branchID int64, patch BranchPatch) (*domain.StrmBranch, error) {
+func (s *Service) UpdateBranch(ctx context.Context, taskID, branchID int64, patch BranchPatch, relativeDirs []string) (*domain.StrmBranch, error) {
 	if s.branches == nil {
 		return nil, domain.Errf(domain.CodeNotImplement)
 	}
@@ -760,7 +789,13 @@ func (s *Service) UpdateBranch(ctx context.Context, taskID, branchID int64, patc
 	if patch.Status != nil {
 		branch.Status = *patch.Status
 	}
-	branch.RelativePath = branchRelativePath(task.Path, branch.Path)
+	// 只在真的改了目录时才重算相对路径：否则像“只改保留天数”这种更新
+	// 会拿显示路径重算一遍，把已经按目录段存好的值覆盖掉。
+	if len(relativeDirs) > 0 {
+		branch.RelativePath = dirKey(relativeDirs)
+	} else if patch.ParentID != nil || patch.Path != nil {
+		branch.RelativePath = branchRelativePath(task.Path, branch.Path)
+	}
 	if branch.BranchType == domain.StrmBranchTypeBase {
 		branch.Recursive = false
 		branch.RetentionDays = 0
@@ -797,6 +832,20 @@ func (s *Service) DeleteBranch(ctx context.Context, id int64) error {
 		return domain.Errf(domain.CodeNotImplement)
 	}
 	return s.branches.Delete(ctx, id)
+}
+
+// resolveBranchRelativePath 计算分支的相对路径。
+//
+// 优先用调用方传来的「目录段数组」：显示路径是用 "/" 拼起来的字符串，
+// 当某个目录名自带斜杠时（例：一个名为 abc/def/ghi 的目录），
+// 它和三层目录 abc/def/ghi 的显示路径完全相同，无法还原段边界，
+// 于是本地会被建出多层目录。拿到数组就不会丢这个信息。
+// 只有拿不到数组时才退回按显示路径做前缀相减。
+func resolveBranchRelativePath(taskPath, branchPath string, relativeDirs []string) string {
+	if len(relativeDirs) > 0 {
+		return dirKey(relativeDirs)
+	}
+	return branchRelativePath(taskPath, branchPath)
 }
 
 func branchRelativePath(taskPath, branchPath string) string {

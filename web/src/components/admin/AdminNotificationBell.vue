@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import AppModal from "@/components/base/AppModal.vue";
 import { ackRetentionScopeWarn } from "@/api/cacheRetention";
+import { strmDeleteApi } from "@/api/cloudTools";
 import {
   deleteAllNotifications,
   deleteNotification,
   fetchNotifications,
-  fetchUnreadCount,
   isCacheScopeWarnNotification,
   isStrmScanWarnNotification,
   isStrmScrapeWarnNotification,
+  isStrmDeleteConfirmNotification,
   markAllNotificationsRead,
   markNotificationRead,
   parseStrmScanFailures,
@@ -18,6 +20,13 @@ import {
   strmScrapeFailureStageLabel,
   type NotificationItem,
 } from "@/api/notifications";
+import {
+  refreshUnread,
+  setUnreadCount,
+  startNotificationBadge,
+  stopNotificationBadge,
+  useNotificationBadge,
+} from "@/composables/useNotificationBadge";
 import { confirm } from "@/composables/useConfirm";
 import { formatTimeShort } from "@/utils/format";
 
@@ -28,14 +37,14 @@ const props = withDefaults(
   { variant: "main" },
 );
 
+const { unreadCount, unreadRevision } = useNotificationBadge();
+
 const open = ref(false);
 const loading = ref(false);
-const unreadCount = ref(0);
 const items = ref<NotificationItem[]>([]);
 const detailItem = ref<NotificationItem | null>(null);
 const detailOpen = ref(false);
 const detailBusy = ref(false);
-let pollTimer: ReturnType<typeof setInterval> | undefined;
 
 const isMain = computed(() => props.variant === "main");
 
@@ -46,6 +55,9 @@ const badgeText = computed(() => {
 
 const detailCanDismissScope = computed(() =>
   detailItem.value ? isCacheScopeWarnNotification(detailItem.value) : false,
+);
+const detailCanConfirmStrmDelete = computed(() =>
+  detailItem.value ? isStrmDeleteConfirmNotification(detailItem.value) : false,
 );
 
 interface NotificationFailureRow {
@@ -102,13 +114,6 @@ function levelIcon(level: string): string {
   }
 }
 
-async function refreshUnread() {
-  try {
-    const data = await fetchUnreadCount();
-    unreadCount.value = data.count ?? 0;
-  } catch {}
-}
-
 async function loadList() {
   loading.value = true;
   try {
@@ -131,7 +136,7 @@ async function toggleOpen() {
 async function handleMarkAll() {
   try {
     await markAllNotificationsRead();
-    unreadCount.value = 0;
+    setUnreadCount(0);
     items.value = items.value.map((it) => ({ ...it, is_read: true }));
   } catch {}
 }
@@ -152,7 +157,7 @@ async function handleClearAll() {
   try {
     await deleteAllNotifications();
     items.value = [];
-    unreadCount.value = 0;
+    setUnreadCount(0);
     if (detailOpen.value) closeDetail();
   } catch {}
 }
@@ -170,7 +175,7 @@ async function openDetail(item: NotificationItem) {
     try {
       await markNotificationRead(item.id);
       item.is_read = true;
-      unreadCount.value = Math.max(0, unreadCount.value - 1);
+      setUnreadCount(unreadCount.value - 1);
     } catch {}
   }
 }
@@ -179,7 +184,7 @@ function removeItem(id: number) {
   const wasUnread = items.value.find((it) => it.id === id && !it.is_read);
   items.value = items.value.filter((it) => it.id !== id);
   if (wasUnread) {
-    unreadCount.value = Math.max(0, unreadCount.value - 1);
+    setUnreadCount(unreadCount.value - 1);
   }
   if (detailItem.value?.id === id) {
     closeDetail();
@@ -245,6 +250,20 @@ async function handleDismissScopeWarn() {
   }
 }
 
+async function handleStrmDelete(action: "confirm" | "cancel") {
+  const item = detailItem.value;
+  if (!item || detailBusy.value || !isStrmDeleteConfirmNotification(item)) return;
+  const pendingId = item.ref_id ?? 0;
+  detailBusy.value = true;
+  try {
+    await (action === "confirm" ? strmDeleteApi.confirm(pendingId) : strmDeleteApi.cancel(pendingId));
+    removeItem(item.id);
+    await refreshUnread();
+  } catch {
+    detailBusy.value = false;
+  }
+}
+
 function notifyListMessage(item: NotificationItem): string {
   if (isStrmScanWarnNotification(item)) {
     return parseStrmScanFailures(item.message).summary || item.message;
@@ -262,14 +281,18 @@ function handleDocumentClick(e: MouseEvent) {
   open.value = false;
 }
 
+// 服务端推送到达时，若面板正开着就顺带刷新列表，避免看到过期内容。
+watch(unreadRevision, () => {
+  if (open.value) void loadList();
+});
+
 onMounted(() => {
-  refreshUnread();
-  pollTimer = setInterval(refreshUnread, 30000);
+  startNotificationBadge();
   document.addEventListener("click", handleDocumentClick);
 });
 
 onUnmounted(() => {
-  if (pollTimer) clearInterval(pollTimer);
+  stopNotificationBadge();
   document.removeEventListener("click", handleDocumentClick);
 });
 </script>
@@ -286,10 +309,7 @@ onUnmounted(() => {
       title="通知"
       @click.stop="toggleOpen"
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 7h18s-3 0-3-7" />
-        <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-      </svg>
+      <SvgIcon name="hand-bell-line" :size="18" />
       <span v-if="badgeText" :class="isMain ? 'badge' : 'notify-badge'">{{ badgeText }}</span>
     </button>
 
@@ -399,6 +419,25 @@ onUnmounted(() => {
           不再提示
         </button>
         <button
+          v-if="detailCanConfirmStrmDelete"
+          class="btn btn--secondary"
+          type="button"
+          :disabled="detailBusy"
+          @click="handleStrmDelete('cancel')"
+        >
+          保留远端文件
+        </button>
+        <button
+          v-if="detailCanConfirmStrmDelete"
+          class="btn btn--danger"
+          type="button"
+          :disabled="detailBusy"
+          @click="handleStrmDelete('confirm')"
+        >
+          确认删除源文件
+        </button>
+        <button
+          v-if="!detailCanConfirmStrmDelete"
           class="btn btn--danger"
           type="button"
           :disabled="detailBusy"
@@ -456,7 +495,7 @@ onUnmounted(() => {
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: #ef4444;
   color: #fff;
   font-size: 10px;

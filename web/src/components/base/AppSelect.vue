@@ -186,7 +186,7 @@ onUnmounted(() => {
 }
 .select__option {
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   cursor: pointer;
   font-size: 14px;
   color: var(--text);

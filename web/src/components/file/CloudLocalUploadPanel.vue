@@ -13,6 +13,7 @@ import BreadcrumbNav from "@/components/file/BreadcrumbNav.vue";
 import AppSelect from "@/components/base/AppSelect.vue";
 import type { FileItem } from "@/api/types";
 import type { Crumb } from "@/stores/browser";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 const props = defineProps<{
   open: boolean;
@@ -334,8 +335,8 @@ async function startLocalUpload() {
             从服务器上传
           </button>
         </div>
-        <button type="button" class="local-upload-drawer__close" title="关闭" @click="emit('close')">
-          ✕
+        <button type="button" class="local-upload-drawer__close" title="关闭" aria-label="关闭" @click="emit('close')">
+          <SvgIcon name="xmark" :size="14" />
         </button>
       </div>
 

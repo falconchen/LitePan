@@ -36,7 +36,6 @@ const (
 	KeyIndexStrmAutoDetectEnabled = "index_strm_auto_detect_enabled"
 	KeyAdminTempPasswordHash      = "admin_temp_password_hash"
 	KeyAdminTempPasswordExpiresAt = "admin_temp_password_expires_at"
-	KeyAdminTempPasswordLastReset = "admin_temp_password_last_reset_at"
 	KeyAdminSessionGeneration     = "admin_session_generation"
 )
 
@@ -69,6 +68,8 @@ type LoginResult struct {
 	IsAdmin              bool   `json:"is_admin"`
 	MustChangePassword   bool   `json:"must_change_password"`
 	PasswordChangeReason string `json:"password_change_reason,omitempty"`
+	TwoFactorRequired    bool   `json:"two_factor_required,omitempty"`
+	Challenge            string `json:"challenge,omitempty"`
 }
 
 type SystemConfig struct {
@@ -87,6 +88,7 @@ type SystemConfig struct {
 	LogRetentionDays           int     `json:"log_retention_days,omitempty"`
 	AuthActiveRefreshEnabled   bool    `json:"auth_active_refresh_enabled,omitempty"`
 	WebDAVEnabled              bool    `json:"webdav_enabled"`
+	TwoFactorEnabled           bool    `json:"two_factor_enabled"`
 }
 
 type WebDAVConfigRequest struct {
@@ -110,20 +112,32 @@ type UpdateCredentialsRequest struct {
 }
 
 type Service struct {
-	configs domain.ConfigRepository
-	secret  []byte
-	log     *slog.Logger
+	configs      domain.ConfigRepository
+	secret       []byte
+	log          *slog.Logger
+	configMu     sync.RWMutex
+	configLoaded bool
+	configValues map[string]string
 
 	resetIPCooldown sync.Map
 	resetLastAt     int64
 	resetMu         sync.Mutex
+	twoFactorMu     sync.Mutex
+	twoFactorTryMu  sync.Mutex
+	twoFactorTries  map[string]twoFactorAttempt
 }
 
 func New(configs domain.ConfigRepository, secret []byte, log *slog.Logger) *Service {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Service{configs: configs, secret: secret, log: log}
+	return &Service{
+		configs:        configs,
+		secret:         secret,
+		log:            log,
+		configValues:   map[string]string{},
+		twoFactorTries: map[string]twoFactorAttempt{},
+	}
 }
 
 func (s *Service) serializer() *security.TimedSerializer {
@@ -230,7 +244,10 @@ func (s *Service) Status(ctx context.Context, r *http.Request) Status {
 	}
 }
 
-func (s *Service) Login(ctx context.Context, r *http.Request, w http.ResponseWriter, username, password string, remember bool) (*LoginResult, error) {
+func (s *Service) Login(ctx context.Context, r *http.Request, w http.ResponseWriter, username, password string, remember bool, code, challenge string) (*LoginResult, error) {
+	if strings.TrimSpace(challenge) != "" {
+		return s.completeTwoFactorLogin(ctx, r, w, challenge, code)
+	}
 	storedUsername, storedPassword := s.adminCredentials(ctx)
 	if username != storedUsername {
 		s.log.Warn("管理员登录失败", "username", username, "ip", clientIP(r))
@@ -252,6 +269,54 @@ func (s *Service) Login(ctx context.Context, r *http.Request, w http.ResponseWri
 	if tempMatch {
 		reason = "temporary_password"
 	}
+	if s.twoFactorEnabled(ctx) {
+		payload, err := json.Marshal(loginChallenge{
+			Username:             username,
+			Generation:           s.configString(ctx, KeyAdminSessionGeneration, ""),
+			Remember:             remember,
+			MustChangePassword:   mustChange,
+			PasswordChangeReason: reason,
+		})
+		if err != nil {
+			return nil, domain.Wrap(domain.CodeInternal, err)
+		}
+		token, err := s.serializer().Dumps(string(payload))
+		if err != nil {
+			return nil, domain.Wrap(domain.CodeInternal, err)
+		}
+		return &LoginResult{Username: username, TwoFactorRequired: true, Challenge: token}, nil
+	}
+	return s.finishLogin(r, w, username, remember, mustChange, reason)
+}
+
+func (s *Service) completeTwoFactorLogin(ctx context.Context, r *http.Request, w http.ResponseWriter, challenge, code string) (*LoginResult, error) {
+	payload, err := s.serializer().Loads(strings.TrimSpace(challenge), twoFactorChallengeTTL)
+	if err != nil {
+		return nil, domain.Errorf(domain.CodeAdminAuthRequired, "验证请求已过期，请重新输入账号密码")
+	}
+	var login loginChallenge
+	if err := json.Unmarshal([]byte(payload), &login); err != nil || strings.TrimSpace(login.Username) == "" {
+		return nil, domain.Errorf(domain.CodeAdminAuthRequired, "验证请求无效")
+	}
+	storedUsername, _ := s.adminCredentials(ctx)
+	if login.Username != storedUsername ||
+		login.Generation != s.configString(ctx, KeyAdminSessionGeneration, "") ||
+		!s.twoFactorEnabled(ctx) {
+		return nil, domain.Errorf(domain.CodeAdminAuthRequired, "验证请求已失效，请重新登录")
+	}
+	attemptKey := login.Username + "|" + clientIP(r)
+	if !s.allowTwoFactorAttempt(attemptKey) {
+		return nil, domain.Errorf(domain.CodeRateLimited, "动态验证码错误次数过多，请 5 分钟后再试")
+	}
+	if err := s.verifyTwoFactorCode(ctx, code); err != nil {
+		s.log.Warn("管理员两步验证失败", "username", login.Username, "ip", clientIP(r))
+		return nil, err
+	}
+	s.clearTwoFactorAttempts(attemptKey)
+	return s.finishLogin(r, w, login.Username, login.Remember, login.MustChangePassword, login.PasswordChangeReason)
+}
+
+func (s *Service) finishLogin(r *http.Request, w http.ResponseWriter, username string, remember, mustChange bool, reason string) (*LoginResult, error) {
 	sess := Session{
 		IsAdmin:              true,
 		Username:             username,
@@ -301,9 +366,8 @@ func (s *Service) ResetPassword(ctx context.Context, r *http.Request) (map[strin
 	password := randomPassword(12)
 	hash := security.HashPassword(password)
 	expiresAt := now + tempPasswordTTL
-	_ = s.configs.Set(ctx, KeyAdminTempPasswordHash, hash)
-	_ = s.configs.Set(ctx, KeyAdminTempPasswordExpiresAt, strconv.FormatInt(expiresAt, 10))
-	_ = s.configs.Set(ctx, KeyAdminTempPasswordLastReset, strconv.FormatInt(now, 10))
+	_ = s.setConfig(ctx, KeyAdminTempPasswordHash, hash)
+	_ = s.setConfig(ctx, KeyAdminTempPasswordExpiresAt, strconv.FormatInt(expiresAt, 10))
 	s.resetLastAt = now
 	if ip != "" {
 		s.resetIPCooldown.Store(ip, now)
@@ -348,8 +412,7 @@ func (s *Service) EnsureAdminAccess(ctx context.Context, r *http.Request, sess *
 	return nil
 }
 
-// passwordChangeBootstrapRestoreAllowed 只为首次使用默认账号的恢复流程开放最小写接口。
-// 临时密码会话不能借此绕过强制改密，备份列表及其他后台能力也保持锁定。
+// passwordChangeBootstrapRestoreAllowed 只为默认账号恢复流程开放最小写接口，临时密码会话仍不能借此绕过强制改密。
 func passwordChangeBootstrapRestoreAllowed(r *http.Request, reason string) bool {
 	if r == nil || reason != "default_credentials" || r.Method != http.MethodPost {
 		return false
@@ -396,6 +459,7 @@ func (s *Service) SystemConfig(ctx context.Context) SystemConfig {
 		LogRetentionDays:           s.configInt(ctx, "log_retention_days", 30),
 		AuthActiveRefreshEnabled:   s.configBool(ctx, "auth_active_refresh_enabled", true),
 		WebDAVEnabled:              s.webdavEnabled(ctx),
+		TwoFactorEnabled:           s.twoFactorEnabled(ctx),
 	}
 }
 
@@ -417,7 +481,7 @@ func (s *Service) IndexStrmAutoDetectEnabled(ctx context.Context) bool {
 
 func (s *Service) UpdateWebDAVConfig(ctx context.Context, req WebDAVConfigRequest) error {
 	if req.WebDAVEnabled != nil {
-		_ = s.configs.Set(ctx, KeyWebDAVEnabled, boolString(*req.WebDAVEnabled))
+		_ = s.setConfig(ctx, KeyWebDAVEnabled, boolString(*req.WebDAVEnabled))
 	}
 	return nil
 }
@@ -433,7 +497,7 @@ func (s *Service) UpdateCredentials(ctx context.Context, r *http.Request, w http
 		return err
 	}
 	for _, update := range updates {
-		if err := s.configs.Set(ctx, update.key, update.value); err != nil {
+		if err := s.setConfig(ctx, update.key, update.value); err != nil {
 			return domain.Wrap(domain.CodeInternal, err)
 		}
 	}
@@ -556,7 +620,7 @@ func (s *Service) adminCredentials(ctx context.Context) (string, string) {
 	password := s.configString(ctx, KeyAdminPassword, "")
 	if password == "" || (username == defaultAdminUsername && strings.TrimSpace(password) == defaultAdminPassword) {
 		password = security.HashPassword(defaultAdminPassword)
-		_ = s.configs.Set(ctx, KeyAdminPassword, password)
+		_ = s.setConfig(ctx, KeyAdminPassword, password)
 	}
 	return username, password
 }
@@ -624,25 +688,22 @@ func (s *Service) sessionTimeout(ctx context.Context) int {
 type tempPasswordState struct {
 	Hash      string
 	ExpiresAt int64
-	LastReset int64
 	Valid     bool
 }
 
 func (s *Service) tempPasswordState(ctx context.Context) tempPasswordState {
 	hash := s.configString(ctx, KeyAdminTempPasswordHash, "")
 	expiresAt := int64(s.configInt(ctx, KeyAdminTempPasswordExpiresAt, 0))
-	lastReset := int64(s.configInt(ctx, KeyAdminTempPasswordLastReset, 0))
 	now := time.Now().Unix()
 	return tempPasswordState{
 		Hash:      hash,
 		ExpiresAt: expiresAt,
-		LastReset: lastReset,
 		Valid:     hash != "" && expiresAt > now,
 	}
 }
 
 func (s *Service) configString(ctx context.Context, key, fallback string) string {
-	v, ok, err := s.configs.Get(ctx, key)
+	v, ok, err := s.configValue(ctx, key)
 	if err != nil || !ok || strings.TrimSpace(v) == "" {
 		return fallback
 	}
@@ -650,7 +711,7 @@ func (s *Service) configString(ctx context.Context, key, fallback string) string
 }
 
 func (s *Service) configInt(ctx context.Context, key string, fallback int) int {
-	v, ok, err := s.configs.Get(ctx, key)
+	v, ok, err := s.configValue(ctx, key)
 	if err != nil || !ok || strings.TrimSpace(v) == "" {
 		return fallback
 	}
@@ -662,7 +723,7 @@ func (s *Service) configInt(ctx context.Context, key string, fallback int) int {
 }
 
 func (s *Service) configBool(ctx context.Context, key string, fallback bool) bool {
-	v, ok, err := s.configs.Get(ctx, key)
+	v, ok, err := s.configValue(ctx, key)
 	if err != nil || !ok {
 		return fallback
 	}
@@ -674,6 +735,41 @@ func (s *Service) configBool(ctx context.Context, key string, fallback bool) boo
 	default:
 		return fallback
 	}
+}
+
+func (s *Service) configValue(ctx context.Context, key string) (string, bool, error) {
+	s.configMu.RLock()
+	if s.configLoaded {
+		value, ok := s.configValues[key]
+		s.configMu.RUnlock()
+		return value, ok, nil
+	}
+	s.configMu.RUnlock()
+
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	if !s.configLoaded {
+		values, err := s.configs.All(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		s.configValues = values
+		s.configLoaded = true
+	}
+	value, ok := s.configValues[key]
+	return value, ok, nil
+}
+
+func (s *Service) setConfig(ctx context.Context, key, value string) error {
+	if err := s.configs.Set(ctx, key, value); err != nil {
+		return err
+	}
+	s.configMu.Lock()
+	if s.configLoaded {
+		s.configValues[key] = value
+	}
+	s.configMu.Unlock()
+	return nil
 }
 
 func boolString(v bool) string {

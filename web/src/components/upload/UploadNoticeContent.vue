@@ -8,17 +8,17 @@ import SvgIcon from "@/components/icons/SvgIcon.vue";
     <div class="upload-notice__card">
       <div class="upload-notice__flow">
         <div class="upload-notice__node">
-          <div class="upload-notice__icon"><SvgIcon name="user" :size="26" /></div>
+          <div class="upload-notice__icon"><SvgIcon name="hand-user" :size="26" /></div>
           <span>用户</span>
         </div>
         <div class="upload-notice__arrow">→</div>
         <div class="upload-notice__node upload-notice__node--wide">
-          <div class="upload-notice__icon"><SvgIcon name="monitor" :size="26" /></div>
+          <div class="upload-notice__icon"><SvgIcon name="hand-monitor" :size="26" /></div>
           <span>LitePan服务器</span>
         </div>
         <div class="upload-notice__arrow">→</div>
         <div class="upload-notice__node">
-          <div class="upload-notice__icon"><SvgIcon name="cloud" :size="26" /></div>
+          <div class="upload-notice__icon"><SvgIcon name="hand-cloud" :size="26" /></div>
           <span>网盘</span>
         </div>
       </div>

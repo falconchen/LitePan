@@ -41,7 +41,7 @@ const emit = defineEmits<{ click: [] }>();
   justify-content: center;
   color: #e7effa;
   border: 1px solid rgb(151 181 224 / 16%);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: rgb(7 17 32 / 58%);
   font-size: 20px;
   opacity: 0.82;
@@ -74,7 +74,7 @@ const emit = defineEmits<{ click: [] }>();
   .preview-side-navigation {
     width: 38px;
     height: 54px;
-    border-radius: 9px;
+    border-radius: var(--radius-sm);
     font-size: 16px;
   }
   .preview-side-navigation--previous { left: 6px; }

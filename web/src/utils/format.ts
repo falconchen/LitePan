@@ -97,3 +97,22 @@ export function formatRelativeTimeAgo(value?: string, emptyLabel = "从未刷新
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
   return `${Math.floor(diff / 86_400_000)} 天前`;
 }
+
+/** 增强工具卡片标题搜索过滤：空查询匹配所有，否则大小写不敏感包含匹配。 */
+export function containsQuery(title: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return !q || title.toLowerCase().includes(q);
+}
+
+/** 把未来时间点格式化成「今天 10:58 / 明天 09:30 / 09-14 08:00」；≤60 秒内返回「即将执行」。 */
+export function formatRunTimeText(value: string | Date, now: Date = new Date()): string {
+  const at = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(at.getTime())) return "—";
+  if (at.getTime() <= now.getTime() + 60_000) return "即将执行";
+  const clock = `${pad2(at.getHours())}:${pad2(at.getMinutes())}`;
+  const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((dayStart(at) - dayStart(now)) / 86_400_000);
+  if (dayDiff <= 0) return `今天 ${clock}`;
+  if (dayDiff === 1) return `明天 ${clock}`;
+  return `${pad2(at.getMonth() + 1)}-${pad2(at.getDate())} ${clock}`;
+}

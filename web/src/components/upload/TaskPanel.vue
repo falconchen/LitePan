@@ -4,7 +4,7 @@
       <div class="panel-title">任务面板</div>
       <div class="panel-head-actions">
         <AppIconButton
-          icon="settings"
+          icon="hand-settings"
           label="设置"
           variant="ghost"
           size="sm"
@@ -26,10 +26,7 @@
           </svg>
         </button>
         <button class="head-icon" type="button" title="关闭" aria-label="关闭" @click="closeUploadTaskPanel">
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M3.5 3.5L12.5 12.5"></path>
-            <path d="M12.5 3.5L3.5 12.5"></path>
-          </svg>
+          <SvgIcon name="xmark" :size="14" />
         </button>
         <div class="panel-settings-wrap">
           <UploadTaskSettingsPanel
@@ -111,8 +108,8 @@
         />
 
         <template v-else>
-          <div v-if="taskPanelCategory === 'upload' && currentBatchId" class="task-path-bar">
-            <button type="button" class="task-path-back" @click="leaveTaskFolder()">上传列表</button>
+          <div v-if="taskPanelCategory !== 'offline' && currentBatchId" class="task-path-bar">
+            <button type="button" class="task-path-back" @click="leaveTaskFolder()">{{ taskPanelCategory === "relay" ? "跨盘列表" : "上传列表" }}</button>
             <span class="task-path-separator">/</span>
             <button type="button" class="task-path-crumb" @click="goTaskFolder('')">{{ currentBatchName }}</button>
             <template v-for="crumb in taskFolderCrumbs" :key="crumb.path">
@@ -138,7 +135,7 @@
             >
               <div class="task-row-main">
                 <div class="file-cell">
-                  <span v-if="row.isFolder" class="folder-task-chip"><SvgIcon name="folder" :size="20" /></span>
+                  <span v-if="row.isFolder" class="folder-task-chip"><SvgIcon name="badge-folder" :size="20" /></span>
                   <DriverIcon
                     v-else
                     class="driver-chip"
@@ -259,8 +256,6 @@ const offline = props.offline;
 
 const {
   displayUploadTasks,
-  uploadTaskPanelLoading,
-  uploadTaskPanelLoadingText,
   getUploadTaskDriverBadge,
   getUploadTaskDisplayStatus,
   getUploadTaskPhaseLabel,
@@ -297,6 +292,7 @@ const keyword = ref("");
 const settingsOpen = ref(false);
 const panelExpanded = ref(false);
 const selectedTaskIds = ref<Set<string>>(new Set());
+const selectionAnchorId = ref("");
 const uploadStateFilter = ref<StateKey>("active");
 const relayStateFilter = ref<RelayStateKey>("active");
 const offlineStateFilter = ref<StateKey>("active");
@@ -667,6 +663,51 @@ function buildRelayRow(task: UploadTask): PanelRow {
   };
 }
 
+function buildRelayNodeRow(node: UploadTaskTreeNode): PanelRow {
+  if (!node.isFolder && node.tasks.length === 1) {
+    const row = buildRelayRow(node.tasks[0]);
+    row.id = node.id;
+    row.name = node.name;
+    row.tasks = node.tasks;
+    return row;
+  }
+  const tasks = node.tasks;
+  const representative = tasks[0];
+  const badge = getRelayTaskDriverBadge(representative);
+  const failed = tasks.filter((task) => relayStateOf(task) === "failed").length;
+  const totalBytes = tasks.reduce((sum, task) => sum + Math.max(0, Number(task.total_bytes || 0)), 0);
+  const downloaded = tasks.reduce((sum, task) => sum + Math.max(0, Number(task.downloaded_bytes || 0)), 0);
+  const fallbackProgress = tasks.reduce((sum, task) => sum + clampProgress(task.progress || 0), 0) / Math.max(1, tasks.length);
+  const progress = totalBytes > 0 ? clampProgress((downloaded * 100) / totalBytes) : fallbackProgress;
+  const speed = tasks.reduce((sum, task) => sum + Math.max(0, Number(task.speed_bytes_per_second || 0)), 0);
+  const state: StateKey = failed === tasks.length ? "failed" : "active";
+  return {
+    id: node.id,
+    kind: "relay",
+    raw: representative,
+    name: node.name,
+    source: representative.source_account_name || "源盘",
+    status: state === "failed" ? `下载失败 ${failed} 个` : `正在下载 ${tasks.length} 个文件`,
+    statusDetail: `${tasks.length} 个文件${failed > 0 ? ` · ${failed} 个失败` : ""}`,
+    statusClass: state === "failed" ? "failed" : "downloading",
+    tail: speed > 0 ? `${formatSize(speed)}/s` : "---",
+    tailActive: speed > 0,
+    progress,
+    progressClass: "downloading",
+    showProgress: state === "active" && progress > 0,
+    sortOrder: tasks.reduce((min, task) => Math.min(min, relayTaskOrder(task)), Number.MAX_SAFE_INTEGER),
+    badgeLogo: badge.logo || "",
+    badgeName: "夹",
+    badgeColor: badge.color || "#7b8697",
+    searchText: [node.name, representative.source_account_name, representative.account_name].join(" "),
+    state,
+    isFolder: true,
+    batchId: node.batchId,
+    folderPath: node.path,
+    tasks,
+  };
+}
+
 function buildOfflineRow(task: any): PanelRow {
   const badge = getUploadTaskDriverBadge(task);
   const speedText = offline.speedText(task);
@@ -702,7 +743,14 @@ const uploadRows = computed(() =>
     ? buildUploadTaskLevel(uploadTasks.value, currentBatchId.value, currentFolderPath.value).map(buildUploadNodeRow)
     : uploadRootRows.value,
 );
-const relayRows = computed(() => relayTasks.value.map(buildRelayRow));
+const relayFilteredTasks = computed(() => relayTasks.value.filter((task) => relayStateOf(task) === relayStateFilter.value));
+const relayRows = computed(() => {
+  const tasks = relayFilteredTasks.value;
+  return (currentBatchId.value
+    ? buildUploadTaskLevel(tasks, currentBatchId.value, currentFolderPath.value)
+    : buildUploadTaskLevel(tasks)
+  ).map(buildRelayNodeRow);
+});
 const offlineRows = computed(() => offlineTasks.value.map(buildOfflineRow));
 
 function stateFilterOf(category: CategoryKey) {
@@ -724,7 +772,7 @@ const currentRows = computed(() =>
       if (taskPanelCategory.value === "upload") {
         return row.state === filter;
       }
-      if (taskPanelCategory.value === "relay" && relayStateOf(row.raw) !== filter) return false;
+      if (taskPanelCategory.value === "relay" && row.state !== filter) return false;
       if (taskPanelCategory.value === "offline") {
         if (offlineStateOf(row.raw) !== filter) return false;
       }
@@ -760,16 +808,27 @@ function onTaskListScroll() {
 watch(visibleRows, (rows) => {
   const visibleIds = new Set(rows.map((row) => row.id));
   selectedTaskIds.value = new Set([...selectedTaskIds.value].filter((id) => visibleIds.has(id)));
+  if (!visibleIds.has(selectionAnchorId.value)) selectionAnchorId.value = "";
   requestAnimationFrame(updateTaskListViewport);
 }, { immediate: true });
 
 watch(taskPanelCategory, () => {
-  if (taskPanelCategory.value !== "upload") leaveTaskFolder();
+  leaveTaskFolder();
   requestAnimationFrame(updateTaskListViewport);
 });
 
 watch(uploadStateFilter, () => {
   selectedTaskIds.value = new Set();
+  selectionAnchorId.value = "";
+  taskListScrollTop.value = 0;
+  if (taskListRef.value) taskListRef.value.scrollTop = 0;
+  requestAnimationFrame(updateTaskListViewport);
+});
+
+watch(relayStateFilter, () => {
+  leaveTaskFolder();
+  selectedTaskIds.value = new Set();
+  selectionAnchorId.value = "";
   taskListScrollTop.value = 0;
   if (taskListRef.value) taskListRef.value.scrollTop = 0;
   requestAnimationFrame(updateTaskListViewport);
@@ -799,7 +858,9 @@ function focusUploadTask(task: UploadTask) {
   currentBatchId.value = "";
   currentBatchName.value = "";
   currentFolderPath.value = "";
-  selectedTaskIds.value = new Set([`task:${task.task_id}`]);
+  const rowId = `task:${task.task_id}`;
+  selectedTaskIds.value = new Set([rowId]);
+  selectionAnchorId.value = rowId;
 }
 
 const selectedToggleTasks = computed(() =>
@@ -841,18 +902,17 @@ const emptyText = computed(() => {
 });
 
 const showLoading = computed(() =>
-  (taskPanelCategory.value === "upload" && uploadTaskPanelLoading?.value) ||
-  (taskPanelCategory.value === "offline" && offline.loading?.value),
+  taskPanelCategory.value === "offline" && offline.loading?.value,
 );
-const loadingText = computed(() =>
-  taskPanelCategory.value === "upload" ? uploadTaskPanelLoadingText?.value || "正在加载上传任务..." : "正在加载离线任务...",
-);
+const loadingText = computed(() => "正在加载离线任务...");
 
 function countByState(category: CategoryKey, state: StateKey) {
   if (category === "upload") return uploadRootRows.value.filter((row) => row.state === state).length;
-  const rows = category === "relay" ? relayRows.value : offlineRows.value;
+  if (category === "relay") {
+    return buildUploadTaskLevel(relayTasks.value.filter((task) => relayStateOf(task) === state)).length;
+  }
+  const rows = offlineRows.value;
   return rows.filter((row) => {
-    if (category === "relay") return relayStateOf(row.raw) === state;
     return offlineStateOf(row.raw) === state;
   }).length;
 }
@@ -861,7 +921,7 @@ const navCategories = computed(() => [
   {
     key: "upload" as const,
     label: "上传列表",
-    icon: "upload",
+    icon: "badge-upload",
     count: countByState("upload", "active"),
     states: [
       { key: "active", label: "进行中", count: countByState("upload", "active"), active: uploadStateFilter.value === "active", onClick: () => { uploadStateFilter.value = "active"; } },
@@ -872,7 +932,7 @@ const navCategories = computed(() => [
   {
     key: "relay" as const,
     label: "跨盘下载",
-    icon: "relay",
+    icon: "hand-relay",
     count: countByState("relay", "active"),
     states: [
       { key: "active", label: "进行中", count: countByState("relay", "active"), active: relayStateFilter.value === "active", onClick: () => { relayStateFilter.value = "active"; } },
@@ -882,7 +942,7 @@ const navCategories = computed(() => [
   {
     key: "offline" as const,
     label: "离线任务",
-    icon: "cloud",
+    icon: "hand-cloud",
     count: countByState("offline", "active"),
     states: [
       { key: "active", label: "进行中", count: countByState("offline", "active"), active: offlineStateFilter.value === "active", onClick: () => { offlineStateFilter.value = "active"; } },
@@ -951,14 +1011,27 @@ const detailExtra = computed(() => {
 });
 
 function handleRowClick(event: MouseEvent, rowId: string) {
+  if (event.shiftKey && selectionAnchorId.value) {
+    const anchorIndex = visibleRows.value.findIndex((row) => row.id === selectionAnchorId.value);
+    const rowIndex = visibleRows.value.findIndex((row) => row.id === rowId);
+    if (anchorIndex >= 0 && rowIndex >= 0) {
+      const [start, end] = anchorIndex <= rowIndex ? [anchorIndex, rowIndex] : [rowIndex, anchorIndex];
+      const next = event.metaKey || event.ctrlKey ? new Set(selectedTaskIds.value) : new Set<string>();
+      for (const row of visibleRows.value.slice(start, end + 1)) next.add(row.id);
+      selectedTaskIds.value = next;
+      return;
+    }
+  }
   if (event.metaKey || event.ctrlKey) {
     const next = new Set(selectedTaskIds.value);
     if (next.has(rowId)) next.delete(rowId);
     else next.add(rowId);
     selectedTaskIds.value = next;
+    selectionAnchorId.value = rowId;
     return;
   }
   selectedTaskIds.value = new Set([rowId]);
+  selectionAnchorId.value = rowId;
 }
 
 function openTaskFolder(row: PanelRow) {
@@ -967,6 +1040,7 @@ function openTaskFolder(row: PanelRow) {
   if (!currentBatchName.value) currentBatchName.value = String(row.raw?.batch_name || row.name || "文件夹上传");
   currentFolderPath.value = row.folderPath || "";
   selectedTaskIds.value = new Set();
+  selectionAnchorId.value = "";
   keyword.value = "";
   requestAnimationFrame(() => {
     if (taskListRef.value) taskListRef.value.scrollTop = 0;
@@ -978,6 +1052,7 @@ function leaveTaskFolder() {
   if (!currentBatchId.value) return;
   currentFolderPath.value = "";
   selectedTaskIds.value = new Set();
+  selectionAnchorId.value = "";
   currentBatchId.value = "";
   currentBatchName.value = "";
 }
@@ -985,6 +1060,7 @@ function leaveTaskFolder() {
 function goTaskFolder(path: string) {
   currentFolderPath.value = path;
   selectedTaskIds.value = new Set();
+  selectionAnchorId.value = "";
   requestAnimationFrame(() => {
     if (taskListRef.value) taskListRef.value.scrollTop = 0;
     onTaskListScroll();
@@ -1016,9 +1092,11 @@ function statusPulseClass(row: PanelRow) {
 function toggleSelectAll() {
   if (allVisibleSelected.value) {
     selectedTaskIds.value = new Set();
+    selectionAnchorId.value = "";
     return;
   }
   selectedTaskIds.value = new Set(visibleRows.value.map((row) => row.id));
+  selectionAnchorId.value = visibleRows.value[0]?.id || "";
 }
 
 function canDeleteOfflineTask(task: any) {
@@ -1067,7 +1145,9 @@ async function handleSelectedDelete() {
       folderTaskCount: preferBatchRootDelete ? rows.length : 0,
     });
   } else if (taskPanelCategory.value === "relay") {
-    await handleDeleteRelayTasks(rows.map((row) => row.id));
+    const tasks = rows.flatMap(uploadTasksForRow);
+    const ids = [...new Set(tasks.map((task) => task.task_id))];
+    await handleDeleteRelayTasks(ids);
   } else {
     const deletableRows = rows.filter((row) => canDeleteOfflineTask(row.raw));
     if (!deletableRows.length) {
@@ -1080,6 +1160,7 @@ async function handleSelectedDelete() {
     }
   }
   selectedTaskIds.value = new Set();
+  selectionAnchorId.value = "";
 }
 
 async function handleRowAction(row: PanelRow) {

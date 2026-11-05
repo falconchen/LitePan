@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"litepan/internal/domain"
 	"litepan/internal/driver"
 )
 
@@ -124,7 +123,7 @@ func (sch *Scheduler) startLoop(startupJitter bool) {
 			close(sch.done)
 		}()
 		if startupJitter {
-			sch.log.Info(fmt.Sprintf("认证调度器等待启动退避 %s", activeAuthStartupDelay))
+			sch.log.Debug(fmt.Sprintf("认证调度器等待启动退避 %s", activeAuthStartupDelay))
 			select {
 			case <-time.After(activeAuthStartupDelay):
 			case <-sch.stop:
@@ -161,19 +160,16 @@ func (sch *Scheduler) stopLoop() {
 }
 
 func (sch *Scheduler) mainLoop(ctx context.Context) {
-	sch.svc.setSchedulerLoop(true)
-	defer sch.svc.setSchedulerLoop(false)
-
 	sch.drainRecalc()
 	n := len(sch.svc.managedIDs())
 	sch.log.Info(fmt.Sprintf("认证调度器已启动，管理 %d 个账号", n))
 	for {
-		next := sch.nearestCheck(ctx)
+		next, schedules := sch.nearestCheck(ctx)
 		wait := time.Until(next)
 		if wait < 0 {
 			wait = 0
 		}
-		sch.logNextWaitIfChanged(ctx, next, wait, sch.svc.takeRecalcReason())
+		sch.logNextWaitIfChanged(next, wait, sch.svc.takeRecalcReason(), schedules)
 
 		timer := time.NewTimer(wait)
 		select {
@@ -211,13 +207,6 @@ func (sch *Scheduler) drainRecalc() {
 	}
 }
 
-func recalcLogPrefix(reason string) string {
-	if reason == "" {
-		return "重新计算检查时间"
-	}
-	return fmt.Sprintf("重新计算检查时间（%s）", reason)
-}
-
 // formatSchedTime 把调度时刻格式化为本地时间，与 stdout 日志前缀 time=HH:MM:SS 一致。
 func formatSchedTime(t time.Time) string {
 	if t.IsZero() {
@@ -226,83 +215,65 @@ func formatSchedTime(t time.Time) string {
 	return t.Local().Format("2006-01-02 15:04:05")
 }
 
-func (sch *Scheduler) logNextWaitIfChanged(ctx context.Context, next time.Time, wait time.Duration, reason string) {
-	if reason == "" && !sch.lastLoggedNext.IsZero() && next.Equal(sch.lastLoggedNext) {
+func formatWait(wait time.Duration) (string, int) {
+	if wait >= time.Minute {
+		return "分钟", int(wait.Minutes())
+	}
+	return "秒", int(wait.Seconds())
+}
+
+func (sch *Scheduler) logNextWaitIfChanged(next time.Time, wait time.Duration, reason string, schedules []refreshSchedule) {
+	if !sch.lastLoggedNext.IsZero() && next.Sub(sch.lastLoggedNext).Abs() <= checkTolerance {
 		return
 	}
 	sch.lastLoggedNext = next
-	sch.logNextWait(ctx, next, wait, reason)
+	sch.logNextWait(next, wait, reason, schedules)
 }
 
-func (sch *Scheduler) logNextWait(ctx context.Context, next time.Time, wait time.Duration, reason string) {
-	prefix := recalcLogPrefix(reason)
-	ids := sch.svc.managedIDs()
-	if len(ids) == 0 {
-		nextStr := formatSchedTime(next)
-		if wait >= time.Minute {
-			sch.log.Info(fmt.Sprintf("%s，当前无账号纳入主动认证刷新，下次空闲检查: %s (等待%d分钟)",
-				prefix, nextStr, int(wait.Minutes())),
-				"next_check", nextStr, "wait_minutes", int(wait.Minutes()), "reason", reason)
-		} else {
-			sch.log.Info(fmt.Sprintf("%s，当前无账号纳入主动认证刷新，下次空闲检查: %s (等待%d秒)",
-				prefix, nextStr, int(wait.Seconds())),
-				"next_check", nextStr, "wait_seconds", int(wait.Seconds()), "reason", reason)
-		}
+func (sch *Scheduler) logNextWait(next time.Time, wait time.Duration, reason string, schedules []refreshSchedule) {
+	nextStr := formatSchedTime(next)
+	unit, amount := formatWait(wait)
+	if len(schedules) == 0 {
+		sch.log.Info(fmt.Sprintf("下次认证检查: %s (等待%d%s)", nextStr, amount, unit),
+			"next_check", nextStr, "wait", wait.String(), "reason", reason)
 		return
 	}
-	now := time.Now()
-	var summaries []string
+	summaries := make([]string, 0, len(schedules))
 	shortestName := ""
 	shortestAt := time.Time{}
-	for _, id := range ids {
-		t := sch.svc.calcNextCheck(ctx, id, now, false)
-		name := sch.svc.accountName(ctx, id)
-		st, _ := sch.svc.loadState(ctx, id)
-		status := domain.AuthActive
-		if st != nil {
-			status = st.Status
-		}
-		summaries = append(summaries, fmt.Sprintf("%s(#%d)=%s status=%s", name, id, formatSchedTime(t), status))
-		if shortestAt.IsZero() || t.Before(shortestAt) {
-			shortestAt = t
-			shortestName = name
+	for _, schedule := range schedules {
+		summaries = append(summaries, fmt.Sprintf("%s(#%d)=%s status=%s", schedule.name, schedule.accountID, formatSchedTime(schedule.next), schedule.status))
+		if shortestAt.IsZero() || schedule.next.Before(shortestAt) {
+			shortestAt = schedule.next
+			shortestName = schedule.name
 		}
 	}
-	sch.log.Debug("各账号检查时间: "+strings.Join(summaries, " | "), "account_count", len(ids))
+	sch.log.Debug("各账号检查时间: "+strings.Join(summaries, " | "), "account_count", len(schedules))
 
-	nextStr := formatSchedTime(next)
-	if wait >= time.Minute {
-		sch.log.Info(fmt.Sprintf("%s，最短检查时间: %s，下次检查: %s (等待%d分钟)",
-			prefix, shortestName, nextStr, int(wait.Minutes())),
-			"account", shortestName, "next_check", nextStr, "wait_minutes", int(wait.Minutes()), "reason", reason)
-	} else {
-		sch.log.Info(fmt.Sprintf("%s，最短检查时间: %s，下次检查: %s (等待%d秒)",
-			prefix, shortestName, nextStr, int(wait.Seconds())),
-			"account", shortestName, "next_check", nextStr, "wait_seconds", int(wait.Seconds()), "reason", reason)
-	}
+	sch.log.Info(fmt.Sprintf("下次认证检查: %s (等待%d%s)", nextStr, amount, unit),
+		"account", shortestName, "next_check", nextStr, "wait", wait.String(), "reason", reason)
 }
 
-func (sch *Scheduler) nearestCheck(ctx context.Context) time.Time {
+func (sch *Scheduler) nearestCheck(ctx context.Context) (time.Time, []refreshSchedule) {
 	now := time.Now()
-	ids := sch.svc.managedIDs()
-	if len(ids) == 0 {
-		return now.Add(time.Hour)
-	}
 	firstBoot := sch.svc.firstLoop
 	if sch.svc.firstLoop {
 		sch.svc.firstLoop = false
 	}
+	schedules := sch.svc.refreshSchedules(ctx, now, firstBoot)
+	if len(schedules) == 0 {
+		return now.Add(time.Hour), nil
+	}
 	min := time.Time{}
-	for _, id := range ids {
-		t := sch.svc.calcNextCheck(ctx, id, now, firstBoot)
-		if min.IsZero() || t.Before(min) {
-			min = t
+	for _, schedule := range schedules {
+		if min.IsZero() || schedule.next.Before(min) {
+			min = schedule.next
 		}
 	}
 	if min.IsZero() {
-		return now.Add(time.Hour)
+		min = now.Add(time.Hour)
 	}
-	return min
+	return min, schedules
 }
 
 func (sch *Scheduler) executeCheck(ctx context.Context) {
@@ -310,8 +281,8 @@ func (sch *Scheduler) executeCheck(ctx context.Context) {
 		return
 	}
 	now := time.Now()
-	ids := sch.svc.managedIDs()
-	if len(ids) == 0 {
+	schedules := sch.svc.refreshSchedules(ctx, now, false)
+	if len(schedules) == 0 {
 		return
 	}
 	forceAll := sch.firstExec
@@ -319,11 +290,10 @@ func (sch *Scheduler) executeCheck(ctx context.Context) {
 		sch.firstExec = false
 	}
 
-	var due []int64
-	for _, id := range ids {
-		next := sch.svc.calcNextCheck(ctx, id, now, false)
-		if forceAll || !next.After(now.Add(checkTolerance)) {
-			due = append(due, id)
+	var due []refreshSchedule
+	for _, schedule := range schedules {
+		if forceAll || !schedule.next.After(now.Add(checkTolerance)) {
+			due = append(due, schedule)
 		}
 	}
 	if len(due) == 0 {
@@ -337,10 +307,11 @@ func (sch *Scheduler) executeCheck(ctx context.Context) {
 	success := 0
 	attempted := 0
 	skipped := 0
-	for _, id := range due {
-		name := sch.svc.accountName(ctx, id)
-		next := sch.svc.calcNextCheck(ctx, id, time.Now(), false)
-		if next.After(time.Now().Add(checkTolerance)) {
+	for _, schedule := range due {
+		id, name := schedule.accountID, schedule.name
+		now = time.Now()
+		next := sch.svc.calcNextCheck(ctx, id, now, false)
+		if next.After(now.Add(checkTolerance)) {
 			// 常见于：首次强制巡检把未到期账号拉进列表、被动刷新/凭证回写刚更新过调度
 			skipped++
 			sch.log.Debug(fmt.Sprintf("账号 %s 当前未到期，跳过主动刷新", name),
@@ -358,17 +329,20 @@ func (sch *Scheduler) executeCheck(ctx context.Context) {
 		}
 		attempted++
 		outcome, err := sch.svc.Refresh(ctx, id, driver.CallerActive)
-		switch {
-		case outcome == driver.RefreshSuccess:
+		nextCheck := formatSchedTime(sch.svc.calcNextCheck(ctx, id, time.Now(), false))
+		label := scheduleLabel(name, schedule.driverType)
+		if outcome == driver.RefreshSuccess {
 			success++
-			sch.log.Info(fmt.Sprintf("账号 %s 主动认证刷新成功", name), "account_id", id, "account", name)
-		case err != nil:
-			sch.log.Warn(fmt.Sprintf("账号 %s 主动认证刷新失败: %v", name, err),
-				"account_id", id, "account", name, "outcome", outcome.String())
-		default:
-			sch.log.Warn(fmt.Sprintf("账号 %s 主动认证刷新失败: %s", name, outcome.String()),
-				"account_id", id, "account", name, "outcome", outcome.String())
+			sch.log.Info(fmt.Sprintf("账号 %s 认证刷新成功，下次检查 %s", label, nextCheck),
+				"account_id", id, "account", name, "driver", schedule.driverType, "next_check", nextCheck)
+			continue
 		}
+		cause := outcome.String()
+		if err != nil {
+			cause = err.Error()
+		}
+		sch.log.Warn(fmt.Sprintf("账号 %s 认证刷新失败: %s，下次检查 %s", label, cause, nextCheck),
+			"account_id", id, "account", name, "driver", schedule.driverType, "outcome", outcome.String(), "next_check", nextCheck)
 	}
 	if attempted == 0 {
 		if forceAll && len(due) > 0 {

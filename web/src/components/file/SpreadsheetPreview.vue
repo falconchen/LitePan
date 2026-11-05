@@ -3,11 +3,12 @@ import { computed, onMounted, onUnmounted, ref, shallowRef } from "vue";
 import type { WorkBook, WorkSheet } from "xlsx";
 import { filesApi } from "@/api/files";
 import type { FileItem } from "@/api/types";
-import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
 import { formatSize } from "@/utils/format";
 import { decodeTextBytes } from "@/utils/textEncoding";
 import PreviewHeader from "./PreviewHeader.vue";
-import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
+import { useModalDismiss } from "@/composables/useModalDismiss";
 
 const props = defineProps<{
   accountId: number;
@@ -213,20 +214,14 @@ async function loadWorkbook() {
   }
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (event.key === "Escape") emit("close");
-}
-
-useBodyScrollLock();
+useModalDismiss(() => true, () => emit("close"));
 
 onMounted(() => {
-  window.addEventListener("keydown", handleKeydown);
   void loadWorkbook();
 });
 
 onUnmounted(() => {
   controller.abort();
-  window.removeEventListener("keydown", handleKeydown);
   workbook.value = null;
 });
 </script>
@@ -260,32 +255,23 @@ onUnmounted(() => {
         <span class="sheet-preview__summary">{{ sheetSummary }}</span>
         <div class="sheet-preview__pages" aria-label="表格分页">
           <button type="button" title="上一页" :disabled="page <= 0" @click="previousPage">
-            <i class="fa-solid fa-chevron-left" aria-hidden="true" />
+            <SvgIcon name="chevron-left" size="1em" />
           </button>
           <span>{{ pageSummary }}</span>
           <button type="button" title="下一页" :disabled="page + 1 >= pageCount" @click="nextPage">
-            <i class="fa-solid fa-chevron-right" aria-hidden="true" />
+            <SvgIcon name="chevron-right" size="1em" />
           </button>
         </div>
       </section>
 
       <section class="sheet-preview__stage">
-        <div v-if="loading" class="sheet-preview__state" role="status">
-          <BusySpinner variant="notch" :size="22" color="#1687ff" />
-          <strong>正在解析表格…</strong>
-        </div>
-
-        <div v-else-if="error" class="sheet-preview__state sheet-preview__error" role="alert">
-          <i class="fa-solid fa-file-excel" aria-hidden="true" />
-          <strong>无法预览这个表格</strong>
-          <span>{{ error }}</span>
-          <button type="button" @click="emit('download', file)">下载文件</button>
-        </div>
-
-        <div v-else-if="!gridRows.length" class="sheet-preview__state">
-          <i class="fa-solid fa-table-cells" aria-hidden="true" />
-          <strong>这个工作表没有数据</strong>
-        </div>
+        <PreviewState v-if="loading" loading title="正在解析表格…" />
+        <PreviewState v-else-if="error" icon="file-excel" tone="warn" title="无法预览这个表格" :message="error">
+          <template #actions>
+            <button type="button" @click="emit('download', file)">下载文件</button>
+          </template>
+        </PreviewState>
+        <PreviewState v-else-if="!gridRows.length" icon="table-cells" tone="info" title="这个工作表没有数据" />
 
         <div v-else class="sheet-preview__grid-wrap">
           <table class="sheet-preview__grid">
@@ -350,7 +336,7 @@ onUnmounted(() => {
   padding: 0 14px;
   color: #899bb4;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -380,7 +366,7 @@ onUnmounted(() => {
   width: 30px;
   height: 30px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: rgb(255 255 255 / 6%);
 }
 
@@ -458,32 +444,6 @@ onUnmounted(() => {
 .sheet-preview__corner { z-index: 6 !important; }
 .sheet-preview__grid tbody tr:nth-child(even) td { background: rgb(255 255 255 / 1.5%); }
 .sheet-preview__grid tbody td:hover { background: rgb(39 122 226 / 12%); }
-
-.sheet-preview__state {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 13px;
-  color: #b6c5d8;
-}
-
-.sheet-preview__state > i { color: #59a2ff; font-size: 34px; }
-.sheet-preview__state strong { color: #e7eff9; font-size: 14px; font-weight: 600; }
-.sheet-preview__state span { max-width: 520px; color: #8ea1ba; text-align: center; font-size: 12px; line-height: 1.7; }
-
-
-.sheet-preview__error button {
-  margin-top: 5px;
-  padding: 8px 15px;
-  border: 1px solid rgb(91 160 247 / 26%);
-  border-radius: 7px;
-  background: rgb(43 126 230 / 18%);
-  font-size: 12px;
-}
-
 
 @media (max-width: 760px) {
   .sheet-preview__toolbar {

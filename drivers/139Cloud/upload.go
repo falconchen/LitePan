@@ -411,7 +411,7 @@ func (d *Driver) putUploadPart(ctx context.Context, localPath string, part uploa
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("Origin", webOrigin)
 	req.Header.Set("Referer", webOrigin+"/")
-	resp, data, err := httpx.Execute(d.client, req, httpx.DefaultReadLimit)
+	resp, data, err := httpx.Execute(d.uploadClient, req, httpx.DefaultReadLimit)
 	if err != nil {
 		return domain.Wrap(domain.CodeDriverError, err)
 	}

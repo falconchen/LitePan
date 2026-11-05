@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
 
+ARG DEBIAN_IMAGE=debian:bookworm-slim
+
 FROM node:20-bookworm-slim AS web
 
 WORKDIR /src/web
@@ -9,7 +11,7 @@ RUN npm config set registry https://registry.npmmirror.com \
     && npm ci
 
 COPY web/ ./
-RUN npm run build
+RUN npm run type-check && npm run build
 
 
 FROM golang:1.26.6-bookworm AS build
@@ -31,7 +33,7 @@ COPY --from=web /src/internal/api/web /src/internal/api/web
 RUN go build -tags "${BUILD_TAGS}" -trimpath -ldflags="-s -w" -o /out/litepan ./cmd/litepan
 
 
-FROM debian:bookworm-slim AS runtime
+FROM ${DEBIAN_IMAGE} AS runtime
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata fuse3 \

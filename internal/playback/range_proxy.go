@@ -2,8 +2,10 @@ package playback
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -15,6 +17,9 @@ import (
 )
 
 const upstreamCopyChunk = 1024 * 1024
+
+// ErrInvalidRangeResponse 表示上游拒绝或错误处理了断点区间，调用方可清空本地断点重试。
+var ErrInvalidRangeResponse = errors.New("上游 Range 响应无效")
 
 var copyBufPool = sync.Pool{
 	New: func() any {
@@ -32,7 +37,9 @@ type linkHolder struct {
 	ua             string
 	playback       bool
 	skipRangeLimit bool
+	waitRangeLimit bool
 	refreshLeft    int
+	generation     int64
 }
 
 func (lh *linkHolder) snapshot() domain.DownloadInfo {
@@ -42,13 +49,19 @@ func (lh *linkHolder) snapshot() domain.DownloadInfo {
 }
 
 // refreshAfterFailure 避免同一个过期链接的并发 Range 各自重复刷新。
-func (lh *linkHolder) refreshAfterFailure(ctx context.Context, failed domain.DownloadInfo) (domain.DownloadInfo, bool, error) {
+// status 是触发刷新的上游状态码（传输层自身出错时为 0），只用于日志诊断。
+func (lh *linkHolder) refreshAfterFailure(ctx context.Context, failed domain.DownloadInfo, status int) (domain.DownloadInfo, bool, error) {
+	return lh.refreshVersion(ctx, failed, status, -1)
+}
+
+func (lh *linkHolder) refreshVersion(ctx context.Context, failed domain.DownloadInfo, status int, generation int64) (domain.DownloadInfo, bool, error) {
 	lh.mu.Lock()
 	defer lh.mu.Unlock()
-	if lh.link.URL != failed.URL {
+	if lh.link.URL != failed.URL || (generation >= 0 && lh.generation != generation) {
 		return lh.link, true, nil
 	}
 	if lh.refreshLeft <= 0 {
+		lh.logRefresh("上游临时地址刷新次数已用尽", failed.URL, status, false)
 		return lh.link, false, nil
 	}
 	lh.refreshLeft--
@@ -57,6 +70,8 @@ func (lh *linkHolder) refreshAfterFailure(ctx context.Context, failed domain.Dow
 		return lh.link, false, err
 	}
 	lh.link = res.Link
+	lh.generation++
+	lh.logRefresh("已刷新上游临时地址", res.Link.URL, status, true)
 	return lh.link, true, nil
 }
 
@@ -206,10 +221,10 @@ func writeAll(w io.Writer, data []byte) error {
 func (s *Service) pipeUpstreamRange(ctx context.Context, w io.Writer, lh *linkHolder, start, end int64) error {
 	link := lh.snapshot()
 	for try := 0; try < 2; try++ {
-		resp, err := s.doRangeRequest(ctx, lh.accountID, link, start, end, lh.skipRangeLimit)
+		resp, err := s.doRangeRequest(ctx, lh.accountID, link, start, end, lh.skipRangeLimit, lh.waitRangeLimit)
 		if err != nil {
 			if try == 0 && ctx.Err() == nil {
-				newLink, refreshed, rerr := lh.refreshAfterFailure(ctx, link)
+				newLink, refreshed, rerr := lh.refreshAfterFailure(ctx, link, 0)
 				if rerr != nil {
 					return rerr
 				}
@@ -222,7 +237,7 @@ func (s *Service) pipeUpstreamRange(ctx context.Context, w io.Writer, lh *linkHo
 		}
 		if shouldRefreshUpstreamStatus(resp.StatusCode) {
 			resp.Body.Close()
-			newLink, refreshed, rerr := lh.refreshAfterFailure(ctx, link)
+			newLink, refreshed, rerr := lh.refreshAfterFailure(ctx, link, resp.StatusCode)
 			if rerr != nil {
 				return rerr
 			}
@@ -236,7 +251,16 @@ func (s *Service) pipeUpstreamRange(ctx context.Context, w io.Writer, lh *linkHo
 		validFullResponse := resp.StatusCode == http.StatusOK && start == 0 && resp.ContentLength == want
 		if resp.StatusCode != http.StatusPartialContent && !validFullResponse {
 			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+				return domain.Wrap(domain.CodeDriverError, fmt.Errorf("%w：HTTP %d", ErrInvalidRangeResponse, resp.StatusCode))
+			}
 			return domain.Errorf(domain.CodeDriverError, "上游 Range 返回 %d", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusPartialContent {
+			if got, ok := contentRangeStart(resp.Header.Get("Content-Range")); ok && got != start {
+				resp.Body.Close()
+				return domain.Wrap(domain.CodeDriverError, fmt.Errorf("%w：起点为 %d，期望 %d", ErrInvalidRangeResponse, got, start))
+			}
 		}
 		bufp := copyBufPool.Get().(*[]byte)
 		written, err := io.CopyBuffer(w, io.LimitReader(resp.Body, want), *bufp)
@@ -259,7 +283,7 @@ func (s *Service) pipeUpstreamRange(ctx context.Context, w io.Writer, lh *linkHo
 		}
 		resp.Body.Close()
 		if written == 0 && try == 0 {
-			newLink, refreshed, rerr := lh.refreshAfterFailure(ctx, link)
+			newLink, refreshed, rerr := lh.refreshAfterFailure(ctx, link, resp.StatusCode)
 			if rerr != nil {
 				return rerr
 			}
@@ -274,8 +298,7 @@ func (s *Service) pipeUpstreamRange(ctx context.Context, w io.Writer, lh *linkHo
 	return domain.Errorf(domain.CodeDriverError, "上游 Range 数据不完整")
 }
 
-// shouldRefreshUpstreamStatus 只对可能由临时直链过期或上游短暂异常造成的状态刷新地址。
-// 其他 4xx 通常是请求本身有误，重试没有意义。
+// shouldRefreshUpstreamStatus 只对临时直链过期或上游短暂异常的状态刷新地址，其他 4xx 重试无意义。
 func shouldRefreshUpstreamStatus(status int) bool {
 	return status == http.StatusUnauthorized ||
 		status == http.StatusForbidden ||
@@ -297,7 +320,7 @@ func (g *growBuffer) Write(p []byte) (int, error) {
 func (g *growBuffer) Bytes() []byte { return g.b }
 
 func (s *Service) probeSizeViaRange0(ctx context.Context, lh *linkHolder) (int64, error) {
-	resp, err := s.doRangeRequest(ctx, lh.accountID, lh.snapshot(), 0, 0, lh.skipRangeLimit)
+	resp, err := s.doRangeRequest(ctx, lh.accountID, lh.snapshot(), 0, 0, lh.skipRangeLimit, lh.waitRangeLimit)
 	if err != nil {
 		return 0, err
 	}
@@ -328,11 +351,15 @@ func parseContentRangeTotal(v string) (int64, error) {
 	return n, nil
 }
 
-func (s *Service) doRangeRequest(ctx context.Context, accountID int64, link domain.DownloadInfo, start, end int64, skipLimit bool) (*http.Response, error) {
+func (s *Service) doRangeRequest(ctx context.Context, accountID int64, link domain.DownloadInfo, start, end int64, skipLimit, waitLimit bool) (*http.Response, error) {
 	var release func()
 	if !skipLimit {
 		var err error
-		release, err = s.rangeLimits.acquire(ctx, accountID, link.Concurrency)
+		if waitLimit {
+			release, err = s.rangeLimits.acquireBlocking(ctx, accountID, link.Concurrency)
+		} else {
+			release, err = s.rangeLimits.acquire(ctx, accountID, link.Concurrency)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -350,18 +377,6 @@ func (s *Service) doRangeRequest(ctx context.Context, accountID int64, link doma
 		}
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-	if benchUpstreamHeaders() || benchForwardClientHeaders() {
-		req.Header.Set("Accept", "*/*")
-		req.Header.Set("Connection", "keep-alive")
-		req.Header.Set("Accept-Encoding", "identity")
-	}
-	if benchForwardClientHeaders() {
-		req.Header.Set("Origin", "http://127.0.0.1:5211")
-		req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
-		req.Header.Set("Sec-Fetch-Site", "same-origin")
-		req.Header.Set("Sec-Fetch-Mode", "no-cors")
-		req.Header.Set("Sec-Fetch-Dest", "empty")
-	}
 	resp, err := s.upstreamClient(link).Do(req)
 	if err != nil {
 		release()
@@ -399,17 +414,22 @@ func (s *Service) passthrough(w http.ResponseWriter, r *http.Request, req Reques
 	transport := s.upstreamClient(res.Link).Transport
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,
-		Director: func(out *http.Request) {
-			out.URL = target
-			out.Host = target.Host
-			out.Method = r.Method
-			out.Header = r.Header.Clone()
+		// 用 Rewrite 取代 Director，SetURL 会把入站路径拼到目标后面；Rewrite 不自动补 X-Forwarded-For。
+		Rewrite: func(pr *httputil.ProxyRequest) {
+			*pr.Out.URL = *target // 直接复制目标 URL；不能用 SetURL，它会把入站请求路径拼在后面
+			pr.Out.Host = target.Host
 			for k, vs := range res.Link.Headers {
 				for _, v := range vs {
-					out.Header.Set(k, v)
+					pr.Out.Header.Set(k, v)
 				}
 			}
-			out.Header.Del("Host")
+			pr.Out.Header.Del("Host")
+			if ip, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+				if prior := pr.Out.Header.Get("X-Forwarded-For"); prior != "" {
+					ip = prior + ", " + ip
+				}
+				pr.Out.Header.Set("X-Forwarded-For", ip)
+			}
 		},
 	}
 	proxy.ServeHTTP(w, r)

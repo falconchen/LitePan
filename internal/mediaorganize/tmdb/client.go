@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	defaultBaseURL = "https://api.themoviedb.org/3"
-	defaultTimeout = 10 * time.Second
+	defaultBaseURL   = "https://api.themoviedb.org/3"
+	defaultTimeout   = 10 * time.Second
 	maxSearchResults = 10
 	mediaTypeMovie   = "movie"
 	mediaTypeTV      = "tv"
@@ -188,6 +188,11 @@ func (c *Client) Search(ctx context.Context, query string, year *int, mediaType 
 }
 
 func (c *Client) Lookup(ctx context.Context, tmdbID string, mediaType string) (json.RawMessage, error) {
+	return c.LookupWithAppend(ctx, tmdbID, mediaType)
+}
+
+// LookupWithAppend 查询作品详情，并把指定的 TMDB 子资源合并到同一次响应。
+func (c *Client) LookupWithAppend(ctx context.Context, tmdbID string, mediaType string, appendTo ...string) (json.RawMessage, error) {
 	if c == nil || c.apiKey == "" {
 		return nil, fmt.Errorf("tmdb: missing api key")
 	}
@@ -201,9 +206,9 @@ func (c *Client) Lookup(ctx context.Context, tmdbID string, mediaType string) (j
 	}
 	switch normalized {
 	case mediaTypeTV:
-		return c.lookupTV(ctx, id)
+		return c.lookupTV(ctx, id, appendTo)
 	case mediaTypeMovie:
-		return c.lookupMovie(ctx, id)
+		return c.lookupMovie(ctx, id, appendTo)
 	default:
 		return nil, fmt.Errorf("tmdb: unsupported media type %q", mediaType)
 	}
@@ -224,6 +229,24 @@ func (c *Client) FetchTVSeasons(ctx context.Context, tmdbID string) ([]json.RawM
 		return []json.RawMessage{}, nil
 	}
 	return payload.Seasons, nil
+}
+
+// FetchImages 返回作品的全部图片元数据，由上层按语言选择 Logo。
+func (c *Client) FetchImages(ctx context.Context, tmdbID, mediaType string) (json.RawMessage, error) {
+	if c == nil || c.apiKey == "" {
+		return nil, fmt.Errorf("tmdb: missing api key")
+	}
+	id, err := strconv.Atoi(strings.TrimSpace(tmdbID))
+	if err != nil || id <= 0 {
+		return nil, fmt.Errorf("tmdb: invalid id %q", tmdbID)
+	}
+	mediaType = strings.ToLower(strings.TrimSpace(mediaType))
+	if mediaType != mediaTypeMovie && mediaType != mediaTypeTV {
+		return nil, fmt.Errorf("tmdb: unsupported media type %q", mediaType)
+	}
+	q := url.Values{}
+	q.Set("api_key", c.apiKey)
+	return c.getWithLimit(ctx, fmt.Sprintf("%s/%s/%d/images", c.apiBaseURL(), mediaType, id), q, 4<<20)
 }
 
 // FetchTVSeason 拉取单季详情（含 episodes 列表与 still_path）。
@@ -272,22 +295,50 @@ func (c *Client) searchTV(ctx context.Context, query string, year *int) ([]json.
 	return c.search(ctx, c.apiBaseURL()+"/search/tv", q)
 }
 
-func (c *Client) lookupMovie(ctx context.Context, id int) (json.RawMessage, error) {
+func (c *Client) lookupMovie(ctx context.Context, id int, appendTo []string) (json.RawMessage, error) {
 	q := url.Values{}
 	q.Set("api_key", c.apiKey)
 	if c.language != "" {
 		q.Set("language", c.language)
 	}
-	return c.get(ctx, fmt.Sprintf("%s/movie/%d", c.apiBaseURL(), id), q)
+	setAppendToResponse(q, appendTo)
+	return c.getWithLimit(ctx, fmt.Sprintf("%s/movie/%d", c.apiBaseURL(), id), q, appendResponseLimit(appendTo))
 }
 
-func (c *Client) lookupTV(ctx context.Context, id int) (json.RawMessage, error) {
+func (c *Client) lookupTV(ctx context.Context, id int, appendTo []string) (json.RawMessage, error) {
 	q := url.Values{}
 	q.Set("api_key", c.apiKey)
 	if c.language != "" {
 		q.Set("language", c.language)
 	}
-	return c.get(ctx, fmt.Sprintf("%s/tv/%d", c.apiBaseURL(), id), q)
+	setAppendToResponse(q, appendTo)
+	return c.getWithLimit(ctx, fmt.Sprintf("%s/tv/%d", c.apiBaseURL(), id), q, appendResponseLimit(appendTo))
+}
+
+func appendResponseLimit(values []string) int64 {
+	if len(values) > 0 {
+		return 4 << 20
+	}
+	return 1 << 20
+}
+
+func setAppendToResponse(q url.Values, values []string) {
+	seen := make(map[string]struct{}, len(values))
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		parts = append(parts, value)
+	}
+	if len(parts) > 0 {
+		q.Set("append_to_response", strings.Join(parts, ","))
+	}
 }
 
 func (c *Client) search(ctx context.Context, endpoint string, query url.Values) ([]json.RawMessage, error) {
@@ -311,9 +362,13 @@ func (c *Client) search(ctx context.Context, endpoint string, query url.Values) 
 }
 
 func (c *Client) get(ctx context.Context, endpoint string, query url.Values) (json.RawMessage, error) {
+	return c.getWithLimit(ctx, endpoint, query, 1<<20)
+}
+
+func (c *Client) getWithLimit(ctx context.Context, endpoint string, query url.Values, readLimit int64) (json.RawMessage, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
-		resp, body, err := httpx.DoJSON(ctx, c.http, http.MethodGet, endpoint, query, nil, nil, 1<<20)
+		resp, body, err := httpx.DoJSON(ctx, c.http, http.MethodGet, endpoint, query, nil, nil, readLimit)
 		if err == nil && resp != nil && resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 			return json.RawMessage(body), nil
 		}
@@ -394,7 +449,23 @@ func (c *Client) imageBase() string {
 	return c.imageBaseURL
 }
 
-// DownloadImage 下载 TMDB 图片。posterPath 形如 "/abc.jpg"；size 常用 w500 / original。
+// ImageURL 返回可直接写入 NFO 的 TMDB 图片地址。
+func (c *Client) ImageURL(imagePath, size string) string {
+	imagePath = strings.TrimSpace(imagePath)
+	if imagePath == "" {
+		return ""
+	}
+	if !strings.HasPrefix(imagePath, "/") {
+		imagePath = "/" + imagePath
+	}
+	size = strings.TrimSpace(size)
+	if size == "" {
+		size = "original"
+	}
+	return c.imageBase() + "/" + size + imagePath
+}
+
+// DownloadImage 按 size 下载 TMDB 图片，未指定尺寸时使用原图。
 func (c *Client) DownloadImage(ctx context.Context, posterPath, size string) ([]byte, error) {
 	posterPath = strings.TrimSpace(posterPath)
 	if posterPath == "" {
@@ -405,7 +476,7 @@ func (c *Client) DownloadImage(ctx context.Context, posterPath, size string) ([]
 	}
 	size = strings.TrimSpace(size)
 	if size == "" {
-		size = "w500"
+		size = "original"
 	}
 	endpoint := c.imageBase() + "/" + size + posterPath
 	client := c.http

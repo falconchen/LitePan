@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { onUnmounted, watch } from "vue";
-import { lockPageScroll, unlockPageScroll } from "@/utils/scrollLock";
-import { isTopModal, popModal, pushModal } from "@/composables/modalStack";
+import { computed } from "vue";
+import { useModalDismiss } from "@/composables/useModalDismiss";
+import ModalCloseButton from "@/components/base/ModalCloseButton.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -23,36 +23,7 @@ const props = withDefaults(
 );
 const emit = defineEmits<{ close: [] }>();
 
-const myToken = Symbol("modal");
-
-function onKey(e: KeyboardEvent) {
-  if (e.key === "Escape" && isTopModal(myToken)) emit("close");
-}
-
-function lockPageScrollState(lock: boolean) {
-  if (lock) lockPageScroll();
-  else unlockPageScroll();
-}
-
-watch(
-  () => props.open,
-  (open) => {
-    if (open) {
-      pushModal(myToken);
-      window.addEventListener("keydown", onKey);
-      lockPageScrollState(true);
-    } else {
-      popModal(myToken);
-      window.removeEventListener("keydown", onKey);
-      lockPageScrollState(false);
-    }
-  },
-);
-onUnmounted(() => {
-  popModal(myToken);
-  window.removeEventListener("keydown", onKey);
-  lockPageScrollState(false);
-});
+useModalDismiss(computed(() => props.open), () => emit("close"));
 </script>
 
 <template>
@@ -74,7 +45,7 @@ onUnmounted(() => {
                 <slot name="header">
                   <h3 v-if="title" class="modal__title">{{ title }}</h3>
                 </slot>
-                <button class="modal__close" aria-label="关闭" @click="emit('close')">×</button>
+                <ModalCloseButton @click="emit('close')" />
               </header>
               <div class="modal__body" :class="{ 'modal__body--flush': bodyFlush }">
                 <slot />
@@ -164,7 +135,8 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 18px 24px;
+  min-height: var(--modal-head-h);
+  padding: 0 24px;
   background: var(--panel-head-bg);
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-md) var(--radius-md) 0 0;
@@ -172,22 +144,12 @@ onUnmounted(() => {
 .modal__head--plain {
   background: transparent;
   border-bottom: 0;
-  padding-bottom: 12px;
+  min-height: var(--modal-head-h-plain);
 }
 .modal__title {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: var(--text);
-}
-.modal__close {
-  border: none;
-  background: transparent;
-  font-size: 22px;
-  line-height: 1;
-  color: var(--text-muted);
-}
-.modal__close:hover {
   color: var(--text);
 }
 .modal__body {
@@ -217,5 +179,14 @@ onUnmounted(() => {
 .modal-enter-from,
 .modal-leave-to {
   opacity: 0;
+}
+
+@media (max-width: 768px) {
+  .modal__head,
+  .modal__body,
+  .modal__foot {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
 }
 </style>

@@ -3,17 +3,17 @@
     <div class="notice-card">
       <div class="notice-flow">
         <div class="notice-node">
-          <div class="notice-icon"><SvgIcon name="folder" :size="26" /></div>
+          <div class="notice-icon"><SvgIcon name="badge-folder" :size="26" /></div>
           <span>源文件指纹</span>
         </div>
         <div class="notice-arrow">→</div>
         <div class="notice-node wide">
-          <div class="notice-icon"><SvgIcon name="monitor" :size="26" /></div>
+          <div class="notice-icon"><SvgIcon name="hand-monitor" :size="26" /></div>
           <span>LitePan 试探</span>
         </div>
         <div class="notice-arrow">→</div>
         <div class="notice-node">
-          <div class="notice-icon"><SvgIcon name="cloud" :size="26" /></div>
+          <div class="notice-icon"><SvgIcon name="hand-cloud" :size="26" /></div>
           <span>目标网盘检测</span>
         </div>
       </div>
@@ -47,7 +47,7 @@ import SvgIcon from "@/components/icons/SvgIcon.vue";
 
 .notice-card {
   padding: 14px 16px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface-sunken);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -67,7 +67,7 @@ import SvgIcon from "@/components/icons/SvgIcon.vue";
   align-items: center;
   gap: 6px;
   padding: 10px 8px;
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text-regular);
@@ -110,7 +110,7 @@ import SvgIcon from "@/components/icons/SvgIcon.vue";
 .notice-tip-bar {
   flex-shrink: 0;
   width: 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--brand-gradient);
 }
 

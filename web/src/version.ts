@@ -5,7 +5,6 @@ export const APP_URL = "https://www.litepan.top";
 export const GITHUB_URL = "https://github.com/Ponphil/LitePan";
 
 // 好用斋联名主页（首页 footer 联合测评入口）。
-export const COLLAB_NAME = "好用斋";
 export const COLLAB_URL = "https://haoyongzhai.com";
 export const COLLAB_BADGE_TEXT = "UP主 好用斋";
 

@@ -16,8 +16,9 @@ import (
 
 // Driver 是夸克网盘驱动实例；Cookie 失效需人工重新抓取。
 type Driver struct {
-	add    Addition
-	client *http.Client
+	add          Addition
+	client       *http.Client
+	uploadClient *http.Client
 
 	intervalGate driver.RequestIntervalGate
 	persist      driver.AuthPersistFunc
@@ -54,6 +55,9 @@ func (d *Driver) Init(ctx context.Context) error {
 	if d.client == nil {
 		d.client = httpx.NewClient(httpx.ClientOptions{Timeout: 30 * time.Second})
 	}
+	if d.uploadClient == nil {
+		d.uploadClient = httpx.NewUploadClient(d.client, 60*time.Second, config.UploadUseHTTP2)
+	}
 	d.mu.Lock()
 	if d.cookie == "" {
 		d.cookie = strings.TrimSpace(d.add.Cookie)
@@ -68,6 +72,7 @@ func (d *Driver) Init(ctx context.Context) error {
 
 func (d *Driver) Drop(context.Context) error {
 	httpx.CloseClient(d.client)
+	httpx.CloseClient(d.uploadClient)
 	return nil
 }
 
@@ -147,4 +152,8 @@ var (
 	_ driver.ConnectionErrorExplainer = (*Driver)(nil)
 	_ driver.RequestIntervalConsumer  = (*Driver)(nil)
 	_ driver.QRLoginProvider          = (*Driver)(nil)
+	_ driver.ShareCapabilityProvider  = (*Driver)(nil)
+	_ driver.ShareCreator             = (*Driver)(nil)
+	_ driver.ShareLister              = (*Driver)(nil)
+	_ driver.ShareCanceller           = (*Driver)(nil)
 )

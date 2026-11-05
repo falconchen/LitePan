@@ -9,7 +9,6 @@ import {
 } from "pdfjs-dist";
 import pdfWorkerURL from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
-import "@fortawesome/fontawesome-free/css/all.min.css";
 import { filesApi } from "@/api/files";
 import type { FileItem } from "@/api/types";
 import { useBodyScrollLock } from "@/composables/useBodyScrollLock";
@@ -17,6 +16,8 @@ import { formatSize } from "@/utils/format";
 import PdfPreviewPage from "./PdfPreviewPage.vue";
 import PreviewHeader from "./PreviewHeader.vue";
 import BusySpinner from "@/components/base/BusySpinner.vue";
+import SvgIcon from "@/components/icons/SvgIcon.vue";
+import PreviewState from "@/components/file/PreviewState.vue";
 
 GlobalWorkerOptions.workerSrc = pdfWorkerURL;
 
@@ -373,49 +374,46 @@ onUnmounted(() => {
         </div>
 
         <form v-if="passwordRequired" class="pdf-preview__state pdf-preview__password" @submit.prevent="submitPassword">
-          <i class="fa-solid fa-lock" aria-hidden="true" />
+          <SvgIcon name="lock" size="1em" />
           <strong>受密码保护的 PDF</strong>
           <span>{{ passwordError }}</span>
           <input v-model="passwordValue" type="password" placeholder="请输入 PDF 密码" autocomplete="off" autofocus />
           <button type="submit" :disabled="!passwordValue">打开文件</button>
         </form>
 
-        <div v-else-if="error" class="pdf-preview__state pdf-preview__error" role="alert">
-          <i class="fa-solid fa-file-pdf" aria-hidden="true" />
-          <strong>无法预览这个 PDF</strong>
-          <span>{{ error }}</span>
-          <button type="button" @click="emit('download', file)">下载 PDF</button>
-        </div>
+        <PreviewState v-else-if="error" class="pdf-preview__state pdf-preview__error" icon="file-pdf" tone="error" title="无法预览这个 PDF" :message="error">
+          <template #actions><button type="button" @click="emit('download', file)">下载 PDF</button></template>
+        </PreviewState>
 
         <div v-if="documentReady && !passwordRequired && !error" class="pdf-preview__toolbar">
           <button type="button" aria-label="上一页" title="上一页" :disabled="pageNumber <= 1" @click="changePage(pageNumber - 1)">
-            <i class="fa-solid fa-chevron-left" aria-hidden="true" />
+            <SvgIcon name="chevron-left" size="1em" />
           </button>
           <label class="pdf-preview__pager">
             <input v-model="pageInput" inputmode="numeric" aria-label="页码" @change="submitPageNumber" @keydown.enter.prevent="submitPageNumber" />
             <span>/ {{ pageCount }}</span>
           </label>
           <button type="button" aria-label="下一页" title="下一页" :disabled="pageNumber >= pageCount" @click="changePage(pageNumber + 1)">
-            <i class="fa-solid fa-chevron-right" aria-hidden="true" />
+            <SvgIcon name="chevron-right" size="1em" />
           </button>
           <i class="pdf-preview__divider" aria-hidden="true" />
           <button type="button" aria-label="缩小页面" title="缩小" @click="changeZoom(-1)">
-            <i class="fa-solid fa-minus" aria-hidden="true" />
+            <SvgIcon name="minus" size="1em" />
           </button>
           <span class="pdf-preview__scale" aria-label="当前缩放比例">{{ zoomText }}</span>
           <button type="button" aria-label="放大页面" title="放大" @click="changeZoom(1)">
-            <i class="fa-solid fa-plus" aria-hidden="true" />
+            <SvgIcon name="plus" size="1em" />
           </button>
           <button type="button" class="pdf-preview__actual" aria-label="实际大小" title="实际大小（100%）" @click="actualSize">1:1</button>
           <button type="button" aria-label="适应宽度" title="适应宽度" @click="fitToWidth">
-            <i class="fa-solid fa-arrows-left-right" aria-hidden="true" />
+            <SvgIcon name="arrows-left-right" size="1em" />
           </button>
           <button type="button" aria-label="旋转页面" title="顺时针旋转" @click="rotatePages">
-            <i class="fa-solid fa-rotate-right" aria-hidden="true" />
+            <SvgIcon name="rotate-right" size="1em" />
           </button>
           <i class="pdf-preview__divider" aria-hidden="true" />
           <button type="button" aria-label="搜索 PDF" title="搜索（Ctrl/⌘ + F）" :class="{ 'is-active': searchOpen }" @click="searchOpen = !searchOpen">
-            <i class="fa-solid fa-magnifying-glass" aria-hidden="true" />
+            <SvgIcon name="magnifying-glass" size="1em" />
           </button>
         </div>
 
@@ -423,9 +421,9 @@ onUnmounted(() => {
           <input v-model="searchInput" type="search" placeholder="搜索 PDF 文字" aria-label="搜索 PDF 文字" autofocus />
           <span v-if="searchRunning">搜索中…</span>
           <span v-else>{{ searchPages.length ? `${searchIndex + 1} / ${searchPages.length}` : searchQuery ? "没有结果" : "" }}</span>
-          <button type="button" title="上一个结果" :disabled="!searchPages.length" @click="moveSearch(-1)"><i class="fa-solid fa-chevron-up" /></button>
-          <button type="button" title="下一个结果" :disabled="!searchPages.length" @click="moveSearch(1)"><i class="fa-solid fa-chevron-down" /></button>
-          <button type="button" title="关闭搜索" @click="closeSearch"><i class="fa-solid fa-xmark" /></button>
+          <button type="button" title="上一个结果" :disabled="!searchPages.length" @click="moveSearch(-1)"><SvgIcon name="chevron-up" size="1em" /></button>
+          <button type="button" title="下一个结果" :disabled="!searchPages.length" @click="moveSearch(1)"><SvgIcon name="chevron-down" size="1em" /></button>
+          <button type="button" title="关闭搜索" @click="closeSearch"><SvgIcon name="xmark" size="1em" /></button>
         </form>
       </section>
     </main>
@@ -465,7 +463,7 @@ onUnmounted(() => {
   transform: translateX(-50%);
   padding: 5px;
   border: 1px solid rgb(151 181 224 / 18%);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   background: rgb(4 13 27 / 82%);
   box-shadow: 0 12px 38px rgb(0 0 0 / 30%);
   backdrop-filter: blur(14px);
@@ -478,7 +476,7 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   background: transparent;
   color: #d4dfed;
   font-size: 13px;
@@ -497,7 +495,7 @@ onUnmounted(() => {
   text-align: center;
   color: #f3f7fc;
   border: 1px solid rgb(145 174 216 / 20%);
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   outline: none;
   background: rgb(255 255 255 / 6%);
   font: inherit;
@@ -516,7 +514,7 @@ onUnmounted(() => {
   padding: 6px;
   color: #dbe8f7;
   border: 1px solid rgb(151 181 224 / 18%);
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: rgb(4 13 27 / 92%);
   box-shadow: 0 14px 42px rgb(0 0 0 / 32%);
   backdrop-filter: blur(14px);
@@ -527,7 +525,7 @@ onUnmounted(() => {
   padding: 0 10px;
   color: #f3f7fc;
   border: 1px solid rgb(145 174 216 / 22%);
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   outline: none;
   background: rgb(255 255 255 / 6%);
 }
@@ -537,7 +535,7 @@ onUnmounted(() => {
   width: 32px;
   height: 32px;
   border: 0;
-  border-radius: 7px;
+  border-radius: var(--radius-sm);
   background: transparent;
 }
 .pdf-preview__search button:hover:not(:disabled) { background: rgb(255 255 255 / 10%); }
@@ -545,25 +543,14 @@ onUnmounted(() => {
 
 .pdf-preview__state {
   position: fixed;
-  left: 50%;
   top: 48%;
   z-index: 10;
-  transform: translate(-50%, -50%);
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 18px;
-  border: 1px solid rgb(255 255 255 / 14%);
-  border-radius: 10px;
   background: rgb(5 14 28 / 90%);
-  box-shadow: 0 18px 55px rgb(0 0 0 / 34%);
 }
-.pdf-preview__state strong { font-size: 13px; font-weight: 550; }
 
 .pdf-preview__password,
 .pdf-preview__error { width: min(430px, calc(100vw - 32px)); flex-direction: column; text-align: center; padding: 24px; }
-.pdf-preview__password > i, .pdf-preview__error > i { color: #69b3ff; font-size: 29px; }
-.pdf-preview__error > i { color: #ffb45e; }
+.pdf-preview__password > i, .pdf-preview__error > i, .pdf-preview__password > .lp-svg-icon, .pdf-preview__error > .lp-svg-icon { color: #69b3ff; font-size: 29px; }
 .pdf-preview__password span, .pdf-preview__error span { color: #9eb0c8; font-size: 13px; line-height: 1.7; }
 .pdf-preview__password input {
   width: 100%;
@@ -571,12 +558,12 @@ onUnmounted(() => {
   padding: 0 12px;
   color: #f4f8ff;
   border: 1px solid rgb(145 174 216 / 24%);
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   outline: none;
   background: rgb(255 255 255 / 6%);
 }
 .pdf-preview__password input:focus { border-color: #258df1; }
-.pdf-preview__password button, .pdf-preview__error button { margin-top: 3px; padding: 9px 18px; border: 1px solid #268bff; border-radius: 8px; background: #187ce0; font-weight: 650; }
+.pdf-preview__password button, .pdf-preview__error button { margin-top: 3px; padding: 9px 18px; border: 1px solid #268bff; border-radius: var(--radius-sm); background: #187ce0; font-weight: 650; }
 .pdf-preview__password button:disabled { opacity: 0.45; }
 
 

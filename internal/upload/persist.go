@@ -9,16 +9,20 @@ import (
 	"litepan/internal/domain"
 )
 
+// persistTask 持久化任务状态。内部先持锁完成快照成稿（含 JSON 序列化），
+// 解锁后仅做数据库 IO —— 避免与其它 goroutine 的进度更新并发读写同一任务状态。
 func (m *Manager) persistTask(st *taskState) error {
 	if m.repo == nil || st == nil {
 		return nil
 	}
+	m.mu.Lock()
 	rec := recordFromState(st)
+	m.mu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := m.repo.Upsert(ctx, rec)
 	if err != nil && m.log != nil {
-		m.log.Warn("upload task persist failed", "task_id", st.TaskID, "err", err)
+		m.log.Warn("上传任务落库失败", "task_id", rec.TaskID, "err", err)
 	}
 	return err
 }
@@ -30,7 +34,7 @@ func (m *Manager) deletePersisted(taskID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := m.repo.Delete(ctx, taskID); err != nil && m.log != nil {
-		m.log.Warn("upload task delete persist failed", "task_id", taskID, "err", err)
+		m.log.Warn("上传任务删除落库失败", "task_id", taskID, "err", err)
 	}
 }
 
@@ -44,7 +48,7 @@ func (m *Manager) restoreTasks() {
 	cancel()
 	if err != nil {
 		if m.log != nil {
-			m.log.Warn("upload task restore failed", "err", err)
+			m.log.Warn("上传任务恢复失败", "err", err)
 		}
 		return
 	}
@@ -60,14 +64,9 @@ func (m *Manager) restoreTasks() {
 			st.SpeedBytesPerSecond = 0
 			changed = true
 		}
-		if uploadNeedsLocalFile(st) {
-			if st.localPath == "" {
-				markMissingLocalFileFailed(st)
-				changed = true
-			} else if _, err := os.Stat(st.localPath); err != nil {
-				markMissingLocalFileFailed(st)
-				changed = true
-			}
+		if requiredLocalFileMissing(st) {
+			markMissingLocalFileFailed(st)
+			changed = true
 		}
 		st.runDone = make(chan struct{})
 		m.addTaskLocked(st)
@@ -96,17 +95,24 @@ func uploadNeedsLocalFile(st *taskState) bool {
 	if st == nil {
 		return false
 	}
-	switch st.Status {
-	case StatusSuccess, StatusSkipped:
+	if isCompletedUploadStatus(st.Status) {
 		return false
 	}
-	if st.SourceType != SourceTypeCrossTransfer {
-		return true
-	}
-	if st.Phase == PhaseUploading {
+	if !isCrossTransferDownload(st) {
 		return true
 	}
 	return len(st.resumeData) > 0 || st.UploadedBytes > 0
+}
+
+func requiredLocalFileMissing(st *taskState) bool {
+	if !uploadNeedsLocalFile(st) {
+		return false
+	}
+	if st.localPath == "" {
+		return true
+	}
+	_, err := os.Stat(st.localPath)
+	return err != nil
 }
 
 func recordFromState(st *taskState) *domain.UploadTaskRecord {
@@ -214,24 +220,11 @@ func stateFromRecord(row *domain.UploadTaskRecord) *taskState {
 	if st.conflictPolicy == "" {
 		st.conflictPolicy = "overwrite"
 	}
-	if st.SourceType == "" {
-		st.SourceType = SourceTypeManual
-	}
+	st.SourceType = taskSourceType(st.SourceType)
 	if st.CleanupLocalPath == "" {
 		st.CleanupLocalPath = st.localPath
 	}
-	if st.CleanupLocalMode == "" && st.localPath != "" {
-		switch st.SourceType {
-		case SourceTypeManual, SourceTypeCrossTransfer:
-			st.CleanupLocalMode = CleanupLocalFileOnSuccess
-		}
-	}
-	if st.Phase == "" {
-		if st.SourceType == SourceTypeCrossTransfer {
-			st.Phase = PhaseDownloading
-		} else {
-			st.Phase = PhaseUploading
-		}
-	}
+	st.CleanupLocalMode = taskCleanupMode(st.SourceType, st.localPath, st.CleanupLocalMode)
+	st.Phase = taskPhase(st.SourceType, st.Phase)
 	return st
 }

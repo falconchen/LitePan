@@ -234,13 +234,13 @@ func fromFuseMountDTO(in fuseMountDTO) (*domain.FuseMount, error) {
 		RootItemID: strings.TrimSpace(in.RootItemID),
 		RootPath:   strings.TrimSpace(in.RootPath),
 		MountPoint: mp,
-		ReadOnly:   in.ReadOnly || true,
+		ReadOnly:   in.ReadOnly,
 		AutoMount:  in.AutoMount,
 		UID:        in.UID,
 		GID:        in.GID,
 		DirMode:    dirMode,
 		FileMode:   fileMode,
-		Enabled:    in.Enabled || true,
+		Enabled:    in.Enabled,
 		SortOrder:  in.SortOrder,
 	}, nil
 }

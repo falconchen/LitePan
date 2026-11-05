@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { getApiErrorMessage } from "@/api/client";
 import {
   fetchSystemConfig,
   updateCredentials,
@@ -16,6 +15,7 @@ import { useSettingsLoad } from "@/composables/useSettingsLoad";
 import { useAdminPageLoading } from "@/composables/useAdminLoadingBar";
 import { useSectionTabRoute } from "@/composables/useSectionTabRoute";
 import { useSettingsPageDirty } from "@/composables/useSettingsPageDirty";
+import { useSettingsSave } from "@/composables/useSettingsForm";
 import { useAuthStore } from "@/stores/auth";
 import { useAccountsStore } from "@/stores/accounts";
 import AppButton from "@/components/base/AppButton.vue";
@@ -29,6 +29,7 @@ import SettingsRow from "@/components/admin/SettingsRow.vue";
 import SettingsHelpTooltip from "@/components/admin/SettingsHelpTooltip.vue";
 import ApiKeySettings from "@/components/admin/ApiKeySettings.vue";
 import SvgIcon from "@/components/icons/SvgIcon.vue";
+import TwoFactorSettings from "@/components/admin/TwoFactorSettings.vue";
 import { isCacheSettingKey } from "@/constants/cacheSettings";
 import { getSkinPref, previewSkin, restoreSavedSkin, setSkinPref, type SkinPref } from "@/utils/theme";
 
@@ -96,7 +97,7 @@ const ACCOUNT_DISPLAY_SETTING_KEYS = new Set([
 
 const { loading, runLoad } = useSettingsLoad();
 useAdminPageLoading("settings", loading);
-const saving = ref(false);
+const { saving, runSave } = useSettingsSave();
 const categories = ref<SettingCategory[]>([]);
 const items = ref<SettingItem[]>([]);
 const settingsLoaded = ref(false);
@@ -105,6 +106,7 @@ const original = reactive<Record<string, string>>({});
 
 const newPassword = ref("");
 const confirmPassword = ref("");
+const twoFactorEnabled = ref(false);
 const securityForm = reactive({
   admin_username: "admin",
   session_timeout: "2",
@@ -284,6 +286,7 @@ function applySystemConfig(config: {
   admin_home_return_mode?: string;
   header_effects_enabled?: boolean;
   index_strm_auto_detect_enabled?: boolean;
+  two_factor_enabled?: boolean;
 }) {
   securityForm.admin_username = config.admin_username || "admin";
   securityForm.session_timeout = String(config.session_timeout || 2);
@@ -291,6 +294,7 @@ function applySystemConfig(config: {
   securityOriginal.session_timeout = securityForm.session_timeout;
   securityForm.public_index_enabled = config.public_index_enabled ?? false;
   securityOriginal.public_index_enabled = securityForm.public_index_enabled;
+  twoFactorEnabled.value = config.two_factor_enabled ?? false;
   const mode = config.index_account_switch_mode === "floating" ? "floating" : "dropdown";
   homepageForm.index_account_switch_mode = mode;
   homepageOriginal.index_account_switch_mode = mode;
@@ -366,8 +370,7 @@ async function saveSecurity() {
     return;
   }
 
-  saving.value = true;
-  try {
+  await runSave(async () => {
     await updateCredentials({
       admin_username: securityForm.admin_username.trim(),
       admin_password: newPassword.value || undefined,
@@ -377,19 +380,13 @@ async function saveSecurity() {
     const passwordUpdated = Boolean(newPassword.value);
     newPassword.value = "";
     confirmPassword.value = "";
-    toast.success("账号与安全设置已保存");
     await loadSystemConfig();
     if (passwordUpdated) emit("password-updated");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "账号与安全设置已保存" });
 }
 
 async function saveHomepage() {
-  saving.value = true;
-  try {
+  await runSave(async () => {
     await updateCredentials({
       admin_username: securityForm.admin_username.trim(),
       index_account_switch_mode: homepageForm.index_account_switch_mode,
@@ -400,21 +397,15 @@ async function saveHomepage() {
     });
     localStorage.setItem("litepan:index:compact-home-enabled", homepageForm.compact_home_enabled ? "1" : "0");
     commitSkinDraft();
-    toast.success("首页设置已保存");
     await loadSystemConfig();
     await auth.load();
     emit("admin-ui-updated");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "首页设置已保存" });
 }
 
 async function saveServices() {
   if (!servicesDirty.value) return;
-  saving.value = true;
-  try {
+  await runSave(async () => {
     const changed: Record<string, string> = {};
     for (const key of systemChangedKeys.value) changed[key] = form[key];
     const accountDisplayChanged = Object.keys(changed).some((key) => ACCOUNT_DISPLAY_SETTING_KEYS.has(key));
@@ -422,12 +413,7 @@ async function saveServices() {
       applyPayload(await saveSettings(changed));
     }
     if (accountDisplayChanged) await accountsStore.loadAccounts();
-    toast.success("其他设置已保存");
-  } catch (e) {
-    toast.error(getApiErrorMessage(e, "保存失败"));
-  } finally {
-    saving.value = false;
-  }
+  }, { successMessage: "其他设置已保存" });
 }
 
 async function submit() {
@@ -473,7 +459,7 @@ async function submit() {
     <template v-if="!loading">
       <div v-if="isSecurityTab && canBootstrapRestore" class="bootstrap-restore-card">
         <div class="bootstrap-restore-card__icon">
-          <SvgIcon name="fa-database" :size="24" />
+          <SvgIcon name="hand-database" :size="22" />
         </div>
         <div class="bootstrap-restore-card__copy">
           <strong>已有 LitePan 备份？</strong>
@@ -587,6 +573,17 @@ async function submit() {
             />
           </template>
         </SettingsRow>
+      </SettingsCard>
+
+      <!-- 两步验证单独一张卡片，不和账号安全其它项挤在一起 -->
+      <SettingsCard v-if="isSecurityTab && !forcePasswordChange" title="两步验证" :accent="accentColor">
+        <template #head-aside>
+          <p class="two-factor-tip">登录时除密码外，还需要验证器生成的 6 位动态码；验证器不可用时可用恢复码登录。</p>
+        </template>
+        <TwoFactorSettings
+          :enabled="twoFactorEnabled"
+          @changed="twoFactorEnabled = $event"
+        />
       </SettingsCard>
 
       <SettingsCard v-if="isHomepageTab" title="STRM" :accent="accentColor">
@@ -822,6 +819,18 @@ async function submit() {
 </template>
 
 <style scoped>
+/* 卡片标题旁的说明，和刮削设置里的做法一致 */
+.two-factor-tip {
+  margin: 0;
+  padding: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings {
   padding-bottom: 24px;
 }
@@ -843,7 +852,7 @@ async function submit() {
   place-items: center;
   width: 46px;
   height: 46px;
-  border-radius: 14px;
+  border-radius: var(--radius-card);
   color: var(--brand);
   background: color-mix(in srgb, var(--brand) 12%, var(--surface));
 }

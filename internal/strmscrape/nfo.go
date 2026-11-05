@@ -5,25 +5,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
-
-	"litepan/internal/mediaorganize/rules"
 )
 
-type movieNFO struct {
-	XMLName xml.Name `xml:"movie"`
-	Title   string   `xml:"title"`
-	Year    string   `xml:"year,omitempty"`
-	TMDBID  string   `xml:"tmdbid,omitempty"`
-	Plot    string   `xml:"plot,omitempty"`
+type workNFO struct {
+	XMLName xml.Name
+	Title   string     `xml:"title"`
+	Year    string     `xml:"year,omitempty"`
+	TMDBID  string     `xml:"tmdbid,omitempty"`
+	Plot    string     `xml:"plot,omitempty"`
+	Actors  []nfoActor `xml:"actor,omitempty"`
 }
 
-type tvshowNFO struct {
-	XMLName xml.Name `xml:"tvshow"`
-	Title   string   `xml:"title"`
-	Year    string   `xml:"year,omitempty"`
-	TMDBID  string   `xml:"tmdbid,omitempty"`
-	Plot    string   `xml:"plot,omitempty"`
+type nfoActor struct {
+	XMLName xml.Name `xml:"actor"`
+	Name    string   `xml:"name"`
+	Role    string   `xml:"role,omitempty"`
+	Order   int      `xml:"order"`
+	Thumb   string   `xml:"thumb,omitempty"`
 }
 
 type seasonNFO struct {
@@ -43,6 +43,23 @@ type episodeNFO struct {
 	Aired     string   `xml:"aired,omitempty"`
 	TMDBID    string   `xml:"tmdbid,omitempty"`
 	ShowTitle string   `xml:"showtitle,omitempty"`
+}
+
+var nfoRootCloseRe = regexp.MustCompile(`(?i)</(?:movie|tvshow)\s*>`)
+
+// nfoLooksStandard 文件含 movie/tvshow 根节点才算可用 NFO，压制组的 MediaInfo 文本不算。
+func nfoLooksStandard(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	lower := strings.ToLower(string(data))
+	return strings.Contains(lower, "<movie") || strings.Contains(lower, "<tvshow")
+}
+
+// nfoWriteNeeded 目标 NFO 不存在或不是标准 NFO 时都要重写，压制组文本对 Kodi/Emby 无用。
+func nfoWriteNeeded(overwrite bool, nfo string) bool {
+	return overwrite || !nfoLooksStandard(nfo)
 }
 
 // workMetaPaths 返回电影或剧集的兼容元数据路径。
@@ -73,7 +90,16 @@ func primaryStrmStem(g workGroup) string {
 
 func workHasNFO(g workGroup, mediaType string) bool {
 	for _, p := range workNFOCandidates(g, mediaType) {
-		if fileExists(p) {
+		if nfoLooksStandard(p) {
+			return true
+		}
+	}
+	return false
+}
+
+func workHasActors(g workGroup, mediaType string) bool {
+	for _, path := range workNFOCandidates(g, mediaType) {
+		if nfoLooksStandard(path) && nfoHasActors(path) {
 			return true
 		}
 	}
@@ -135,6 +161,40 @@ func workPosterFile(g workGroup, mediaType string) string {
 	return poster
 }
 
+func workFanartPath(g workGroup) string {
+	if g.flatFile != "" {
+		return primaryStrmStem(g) + "-fanart.jpg"
+	}
+	return filepath.Join(g.absDir, "fanart.jpg")
+}
+
+func workHasFanart(g workGroup) bool {
+	if g.flatFile != "" {
+		stem := primaryStrmStem(g)
+		return fileExists(stem+"-fanart.jpg") || fileExists(stem+"-fanart.png")
+	}
+	for _, name := range []string{"fanart.jpg", "fanart.png", "backdrop.jpg", "backdrop.png", "background.jpg", "background.png"} {
+		if fileExists(filepath.Join(g.absDir, name)) {
+			return true
+		}
+	}
+	return false
+}
+
+func workClearLogoPath(g workGroup) string {
+	if g.flatFile != "" {
+		return primaryStrmStem(g) + "-clearlogo.png"
+	}
+	return filepath.Join(g.absDir, "clearlogo.png")
+}
+
+func workHasClearLogo(g workGroup) bool {
+	if g.flatFile != "" {
+		return fileExists(primaryStrmStem(g) + "-clearlogo.png")
+	}
+	return fileExists(filepath.Join(g.absDir, "clearlogo.png"))
+}
+
 func seasonPosterPath(showDir string, season int) string {
 	if season <= 0 {
 		return filepath.Join(showDir, "season-specials-poster.jpg")
@@ -143,32 +203,37 @@ func seasonPosterPath(showDir string, season int) string {
 }
 
 func listLocalSeasonNumbers(showDir string) []int {
-	entries, err := os.ReadDir(showDir)
-	if err != nil {
-		return nil
-	}
+	return seasonNumbersFromDirs(listLocalSeasonDirs(showDir))
+}
+
+func seasonNumbersFromDirs(dirs []seasonDir) []int {
 	seen := map[int]struct{}{}
 	var out []int
-	for _, d := range entries {
-		if !d.IsDir() {
+	for _, dir := range dirs {
+		if _, ok := seen[dir.number]; ok {
 			continue
 		}
-		if n := rules.ParseSeasonDirNumber(d.Name()); n != nil {
-			if _, ok := seen[*n]; ok {
-				continue
-			}
-			seen[*n] = struct{}{}
-			out = append(out, *n)
-		}
+		seen[dir.number] = struct{}{}
+		out = append(out, dir.number)
 	}
 	return out
 }
 
-func writeMovieNFO(path, title, tmdbID, plot string, year *int) error {
-	nfo := movieNFO{
-		Title:  strings.TrimSpace(title),
-		TMDBID: strings.TrimSpace(tmdbID),
-		Plot:   strings.TrimSpace(plot),
+func writeMovieNFO(path, title, tmdbID, plot string, year *int, actors ...nfoActor) error {
+	return writeWorkNFO(path, "movie", title, tmdbID, plot, year, actors)
+}
+
+func writeTVShowNFO(path, title, tmdbID, plot string, year *int, actors ...nfoActor) error {
+	return writeWorkNFO(path, "tvshow", title, tmdbID, plot, year, actors)
+}
+
+func writeWorkNFO(path, root, title, tmdbID, plot string, year *int, actors []nfoActor) error {
+	nfo := workNFO{
+		XMLName: xml.Name{Local: root},
+		Title:   strings.TrimSpace(title),
+		TMDBID:  strings.TrimSpace(tmdbID),
+		Plot:    strings.TrimSpace(plot),
+		Actors:  actors,
 	}
 	if year != nil && *year > 0 {
 		nfo.Year = fmt.Sprintf("%d", *year)
@@ -176,16 +241,39 @@ func writeMovieNFO(path, title, tmdbID, plot string, year *int) error {
 	return writeXML(path, nfo)
 }
 
-func writeTVShowNFO(path, title, tmdbID, plot string, year *int) error {
-	nfo := tvshowNFO{
-		Title:  strings.TrimSpace(title),
-		TMDBID: strings.TrimSpace(tmdbID),
-		Plot:   strings.TrimSpace(plot),
+func nfoHasActors(path string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(strings.ToLower(string(data)), "<actor>")
+}
+
+// appendNFOActors 在仅补缺模式下保留已有 NFO 的全部内容，只补入演员节点。
+func appendNFOActors(path string, actors []nfoActor) error {
+	if len(actors) == 0 || nfoHasActors(path) {
+		return nil
 	}
-	if year != nil && *year > 0 {
-		nfo.Year = fmt.Sprintf("%d", *year)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
 	}
-	return writeXML(path, nfo)
+	matches := nfoRootCloseRe.FindAllIndex(data, -1)
+	if len(matches) == 0 {
+		return fmt.Errorf("NFO 缺少 movie/tvshow 根节点")
+	}
+	idx := matches[len(matches)-1][0]
+	var fragments strings.Builder
+	for _, actor := range actors {
+		raw, err := xml.Marshal(actor)
+		if err != nil {
+			return err
+		}
+		fragments.WriteString("  ")
+		fragments.Write(raw)
+		fragments.WriteByte('\n')
+	}
+	updated := append([]byte{}, data[:idx]...)
+	updated = append(updated, []byte(fragments.String())...)
+	updated = append(updated, data[idx:]...)
+	return os.WriteFile(path, updated, 0o644)
 }
 
 func writeSeasonNFO(path string, season int, title, plot, premiered string) error {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -248,19 +249,16 @@ func (s *Service) PollBind(ctx context.Context, token string) (PollResult, error
 	}
 
 	if err := sess.client.bind(ctx, code); err != nil {
-		s.dropSession(token)
-		return PollResult{Status: driver.QRFailed, Message: err.Error()}, nil
+		return s.failBind(token, err), nil
 	}
 	tvUID, tvNickname, tvRaw, err := sess.client.userInfo(ctx)
 	if err != nil {
-		s.dropSession(token)
-		return PollResult{Status: driver.QRFailed, Message: err.Error()}, nil
+		return s.failBind(token, err), nil
 	}
 
 	webUID, webNickname, webErr := s.webAccountIdentity(ctx, sess.accountID)
 	if webErr != nil {
-		s.dropSession(token)
-		return PollResult{Status: driver.QRFailed, Message: webErr.Error()}, nil
+		return s.failBind(token, webErr), nil
 	}
 	s.log.Info("夸克 TV 绑定账号比对",
 		"account_id", sess.accountID,
@@ -271,12 +269,10 @@ func (s *Service) PollBind(ctx context.Context, token string) (PollResult, error
 		"tv_user_info", string(tvRaw),
 	)
 	if strings.TrimSpace(tvNickname) == "" || strings.TrimSpace(webNickname) == "" {
-		s.dropSession(token)
-		return PollResult{Status: driver.QRFailed, Message: "无法获取账号昵称用于校验，请重试"}, nil
+		return s.failBind(token, errors.New("无法获取账号昵称用于校验，请重试")), nil
 	}
 	if strings.TrimSpace(tvNickname) != strings.TrimSpace(webNickname) {
-		s.dropSession(token)
-		return PollResult{Status: driver.QRFailed, Message: "TV 账号与所选夸克账号不一致（昵称不同），请确认扫码的是同一账号"}, nil
+		return s.failBind(token, errors.New("TV 账号与所选夸克账号不一致（昵称不同），请确认扫码的是同一账号")), nil
 	}
 
 	deviceID, refreshToken, accessToken, expiresAt := sess.client.Snapshot()
@@ -292,12 +288,17 @@ func (s *Service) PollBind(ctx context.Context, token string) (PollResult, error
 		BoundAt:             time.Now(),
 	}
 	if err := s.bindings.Upsert(ctx, binding); err != nil {
-		s.dropSession(token)
-		return PollResult{Status: driver.QRFailed, Message: "保存绑定失败：" + err.Error()}, nil
+		return s.failBind(token, fmt.Errorf("保存绑定失败：%w", err)), nil
 	}
 	s.clearBindingInvalid(sess.accountID)
 	s.dropSession(token)
 	return PollResult{Status: driver.QRSuccess}, nil
+}
+
+// failBind 统一登记绑定失败：清理二维码会话并返回失败结果。
+func (s *Service) failBind(token string, err error) PollResult {
+	s.dropSession(token)
+	return PollResult{Status: driver.QRFailed, Message: err.Error()}
 }
 
 // DeleteBinding 清理某账号的 TV 绑定（账号删除时联动）。

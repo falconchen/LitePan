@@ -333,13 +333,13 @@ func (r *remoteWindowReader) readRangeOnce(ctx context.Context, off int64, dest 
 	end := off + int64(len(dest)) - 1
 	link := r.lh.snapshot()
 	for try := 0; try < 2; try++ {
-		resp, err := r.svc.doRangeRequest(ctx, r.lh.accountID, link, off, end, r.lh.skipRangeLimit)
+		resp, err := r.svc.doRangeRequest(ctx, r.lh.accountID, link, off, end, r.lh.skipRangeLimit, r.lh.waitRangeLimit)
 		if err != nil {
 			return 0, err
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			_ = resp.Body.Close()
-			newLink, refreshed, refreshErr := r.lh.refreshAfterFailure(ctx, link)
+			newLink, refreshed, refreshErr := r.lh.refreshAfterFailure(ctx, link, resp.StatusCode)
 			if refreshErr != nil {
 				return 0, refreshErr
 			}

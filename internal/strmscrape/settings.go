@@ -26,6 +26,10 @@ func (s *Service) GetSettings() Settings {
 	out.TmdbAPIHost = mediaorganize.PlannerTMDBAPIHost(enriched)
 	out.TmdbImageHost = mediaorganize.PlannerTMDBImageHost(enriched)
 	out.TmdbRequestIntervalMS = s.settings.Int(settings.KeyMOTmdbRequestIntervalMS)
+	out.EpisodeInfo = s.settings.Bool(settings.KeyStrmScrapeEpisodeInfo)
+	out.Fanart = s.settings.Bool(settings.KeyStrmScrapeFanart)
+	out.Actors = s.settings.Bool(settings.KeyStrmScrapeActors)
+	out.ClearLogo = s.settings.Bool(settings.KeyStrmScrapeClearLogo)
 	proxy := mediaorganize.TmdbProxyFromSettings(enriched)
 	out.ProxyEnabled = proxy.Enabled
 	out.ProxyURL = proxy.URL
@@ -39,7 +43,11 @@ func (s *Service) UpdateSettings(ctx context.Context, in Settings) error {
 		return nil
 	}
 	payload := map[string]string{
-		settings.KeyStrmScrapeWriteMode: normalizeWriteMode(in.WriteMode),
+		settings.KeyStrmScrapeWriteMode:   normalizeWriteMode(in.WriteMode),
+		settings.KeyStrmScrapeEpisodeInfo: strconv.FormatBool(in.EpisodeInfo),
+		settings.KeyStrmScrapeFanart:      strconv.FormatBool(in.Fanart),
+		settings.KeyStrmScrapeActors:      strconv.FormatBool(in.Actors),
+		settings.KeyStrmScrapeClearLogo:   strconv.FormatBool(in.ClearLogo),
 	}
 	if lang := strings.TrimSpace(in.TmdbLanguage); lang != "" {
 		payload[settings.KeyMOTmdbLanguage] = lang
