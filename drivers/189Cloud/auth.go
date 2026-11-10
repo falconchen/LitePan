@@ -112,15 +112,25 @@ func (d *Driver) refreshSession(ctx context.Context, accessToken string) error {
 	} else if out.SessionKey == "" || out.SessionSecret == "" {
 		return domain.Errorf(domain.CodeDriverError, "刷新会话响应缺少个人云会话信息")
 	}
+	refresh := strings.TrimSpace(out.RefreshToken)
+	if refresh != "" {
+		d.mu.Lock()
+		d.refreshToken = refresh
+		d.mu.Unlock()
+		// 会话接口也可能轮换 refresh_token；仅补写该字段，保留已有访问令牌和到期时间。
+		// 回调在锁外执行，保存成功后再接收会话，失败时保留内存中的新令牌供重试。
+		if d.persist != nil {
+			if err := d.persist(ctx, domain.AuthCredentials{RefreshToken: refresh}); err != nil {
+				return domain.Wrap(domain.CodeInternal, err)
+			}
+		}
+	}
 	d.mu.Lock()
 	d.sessionKey = out.SessionKey
 	d.sessionSecret = out.SessionSecret
 	d.familyKey = out.FamilySessionKey
 	d.familySecret = out.FamilySessionSecret
 	d.loginName = out.LoginName
-	if out.RefreshToken != "" {
-		d.refreshToken = out.RefreshToken
-	}
 	d.mu.Unlock()
 	return nil
 }
